@@ -66,9 +66,10 @@ export function ArtistPicker({
 }: Props) {
   const { colors } = useTheme();
   const { width: windowWidth } = useWindowDimensions();
-  const width = Math.max(windowWidth || 360, 280);
+  // Cap usable width so desktop doesn't make 400px circles that push rows off-screen
+  const width = Math.min(Math.max(windowWidth || 360, 280), 480);
   const chip = Math.max(
-    88,
+    96,
     Math.floor((width - Spacing.lg * 2 - GAP * (COLS - 1)) / COLS)
   );
 

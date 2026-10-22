@@ -92,7 +92,7 @@ export default function OnboardingScreen() {
       style={[
         styles.rootFlat,
         {
-          backgroundColor: colors.background,
+          backgroundColor: '#0A0A0A',
           paddingTop: insets.top + 10,
         },
       ]}
@@ -104,8 +104,8 @@ export default function OnboardingScreen() {
           listPaddingBottom={24}
           header={
             <View style={styles.pickerHeader}>
-              <Text style={[styles.pickerTitle, { color: colors.ink }]}>Chi ascolti?</Text>
-              <Text style={[styles.pickerSub, { color: colors.muted }]}>
+              <Text style={[styles.pickerTitle, { color: '#FFFFFF' }]}>Chi ascolti?</Text>
+              <Text style={[styles.pickerSub, { color: '#9A9A9A' }]}>
                 Scegli {MAX_TASTE_PICKS} artisti.
               </Text>
               <Text style={[styles.counter, { color: colors.green }]}>
@@ -121,7 +121,7 @@ export default function OnboardingScreen() {
           styles.footer,
           {
             paddingBottom: Math.max(insets.bottom, 12) + 8,
-            backgroundColor: colors.background,
+            backgroundColor: '#0A0A0A',
             borderTopColor: colors.line,
           },
         ]}

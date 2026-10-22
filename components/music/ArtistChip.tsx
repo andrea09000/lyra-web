@@ -75,7 +75,7 @@ export function ArtistChip({ artist, selected, onToggle, size = 104 }: Props) {
         ) : null}
       </View>
       <Text
-        style={[styles.name, { color: colors.ink, width: size }]}
+        style={[styles.name, { color: '#FFFFFF', width: size }]}
         numberOfLines={2}
       >
         {artist.name}

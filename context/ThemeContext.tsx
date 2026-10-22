@@ -1,8 +1,6 @@
 import React, { createContext, useContext, useMemo } from 'react';
-import { useColorScheme } from 'react-native';
 import {
   DarkColors,
-  LightColors,
   type ThemeColors,
   type ThemeMode,
 } from '@/constants/theme';
@@ -15,20 +13,18 @@ type ThemeContextValue = {
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
-/** Prefer dark (wire tension). Light only when system is explicitly light. */
+/**
+ * Lyra is always dark (charcoal + blue). Never follow system light mode —
+ * body/PWA shell is dark, and light ink (#0A0A0A) made artist names invisible.
+ */
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const system = useColorScheme();
-  // Default to dark music UI; only flip when system is explicitly light
-  const mode: ThemeMode = system === 'light' ? 'light' : 'dark';
-  const colors = mode === 'dark' ? DarkColors : LightColors;
-
   const value = useMemo(
     () => ({
-      mode,
-      colors,
-      isDark: mode === 'dark',
+      mode: 'dark' as const,
+      colors: DarkColors,
+      isDark: true,
     }),
-    [mode, colors]
+    []
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
