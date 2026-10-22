@@ -58,10 +58,19 @@ function registerServiceWorker() {
       };
       reg.addEventListener('updatefound', onUpdateFound);
 
+      // Soft reload once when a new SW takes control — avoid tight reload loops
       let refreshing = false;
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         if (refreshing) return;
         refreshing = true;
+        try {
+          const key = 'lyra-sw-reload';
+          const last = Number(sessionStorage.getItem(key) || 0);
+          if (Date.now() - last < 8000) return;
+          sessionStorage.setItem(key, String(Date.now()));
+        } catch {
+          // ignore
+        }
         window.location.reload();
       });
 

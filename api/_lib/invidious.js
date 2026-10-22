@@ -33,16 +33,18 @@ function mapVideo(v) {
   };
 }
 
-async function fetchJson(url, ms = 2500) {
+async function fetchJson(url, ms = 4500) {
   const res = await fetch(url, {
     signal: AbortSignal.timeout(ms),
     headers: { Accept: 'application/json' },
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const ct = String(res.headers.get('content-type') || '').toLowerCase();
+  if (ct.includes('text/html')) throw new Error('HTML instead of JSON');
   return res.json();
 }
 
-async function withInv(path, ms = 2500) {
+async function withInv(path, ms = 4500) {
   let last;
   const tasks = INV.slice(0, 3).map((base) =>
     fetchJson(`${base.replace(/\/$/, '')}${path}`, ms).then((data) => ({ base, data }))

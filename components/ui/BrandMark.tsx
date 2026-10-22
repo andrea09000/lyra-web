@@ -44,6 +44,7 @@ const styles = StyleSheet.create({
     borderRadius: 1,
   },
   word: {
-    fontFamily: Type.brand || Type.display,
+    // System fallback so boot never shows invisible Unbounded text (blank screen).
+    fontFamily: `${Type.brand}, ${Type.display}, system-ui, sans-serif`,
   },
 });

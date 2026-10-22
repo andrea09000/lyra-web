@@ -1,5 +1,5 @@
 /**
- * Multi-source search — Invidious mirrors die often; InnerTube + Piped are the reliable path.
+ * Multi-source search — race InnerTube + Piped + Invidious; first good hit wins.
  */
 const { cleanTitle, ytThumb, withInv, mapVideo } = require('./invidious');
 
@@ -7,11 +7,12 @@ const PIPED = [
   'https://api.piped.private.coffee',
   'https://pipedapi.adminforge.de',
   'https://pipedapi.kavin.rocks',
+  'https://pipedapi.syncpundit.io',
 ];
 
 function videoIdFromUrl(url) {
-  const m = String(url || '').match(/[?&]v=([\w-]{11})|\/watch\?v=([\w-]{11})|\/([\w-]{11})$/);
-  return (m && (m[1] || m[2] || m[3])) || null;
+  const m = String(url || '').match(/[?&]v=([\w-]{11})|\/watch\?v=([\w-]{11})|youtu\.be\/([\w-]{11})|\/([\w-]{11})$/);
+  return (m && (m[1] || m[2] || m[3] || m[4])) || null;
 }
 
 function mapPipedItem(item) {
@@ -35,7 +36,7 @@ async function searchPiped(query, limit) {
     try {
       const res = await fetch(`${base.replace(/\/$/, '')}/search?q=${q}&filter=videos`, {
         headers: { Accept: 'application/json' },
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.timeout(9000),
         redirect: 'follow',
       });
       if (!res.ok) throw new Error(`piped ${res.status}`);
@@ -80,7 +81,7 @@ async function searchInnertube(query, limit) {
 async function searchInvidious(query, limit) {
   const { data } = await withInv(
     `/api/v1/search?q=${encodeURIComponent(query)}&type=video`,
-    3500
+    5000
   );
   const list = Array.isArray(data) ? data : [];
   const tracks = list.map(mapVideo).filter(Boolean).slice(0, limit);
@@ -88,8 +89,15 @@ async function searchInvidious(query, limit) {
   return { tracks, source: 'invidious' };
 }
 
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, rej) => setTimeout(() => rej(new Error(`${label}-timeout`)), ms)),
+  ]);
+}
+
 /**
- * Best-effort search. Prefer InnerTube (stable), then Piped, then Invidious.
+ * Best-effort search. Race all sources — first non-empty wins (fast + resilient).
  */
 async function searchTracks(query, limit = 24) {
   const q = String(query || '').trim();
@@ -100,26 +108,26 @@ async function searchTracks(query, limit = 24) {
     : `${q} music`;
 
   const errors = [];
+  const runners = [
+    withTimeout(searchInnertube(searchQ, limit), 14000, 'yt').catch((err) => {
+      errors.push(`yt:${err?.message || err}`);
+      throw err;
+    }),
+    withTimeout(searchPiped(searchQ, limit), 10000, 'piped').catch((err) => {
+      errors.push(`piped:${err?.message || err}`);
+      throw err;
+    }),
+    withTimeout(searchInvidious(searchQ, limit), 8000, 'inv').catch((err) => {
+      errors.push(`inv:${err?.message || err}`);
+      throw err;
+    }),
+  ];
 
   try {
-    return await searchInnertube(searchQ, limit);
-  } catch (err) {
-    errors.push(`yt:${err?.message || err}`);
+    return await Promise.any(runners);
+  } catch {
+    throw new Error(errors.join(' | ') || 'search failed');
   }
-
-  try {
-    return await searchPiped(searchQ, limit);
-  } catch (err) {
-    errors.push(`piped:${err?.message || err}`);
-  }
-
-  try {
-    return await searchInvidious(searchQ, limit);
-  } catch (err) {
-    errors.push(`inv:${err?.message || err}`);
-  }
-
-  throw new Error(errors.join(' | ') || 'search failed');
 }
 
 async function searchChannels(query, limit = 3) {
@@ -164,7 +172,7 @@ async function searchChannels(query, limit = 3) {
   try {
     const { data } = await withInv(
       `/api/v1/search?q=${encodeURIComponent(q)}&type=channel`,
-      3500
+      5000
     );
     const list = Array.isArray(data) ? data : [];
     const out = [];

@@ -232,14 +232,15 @@ export async function searchTracksForYou(
     return first.length > 2 && !qNorm.includes(first);
   });
 
-  const [general, ...boosted] = await Promise.all([
-    searchTracks(q, limit).catch(() => [] as Track[]),
-    ...boostArtists.map((a) =>
-      searchTracks(`${a.name} ${q}`, 12).catch(() => [] as Track[])
-    ),
-  ]);
+  // One network search only — extra artist queries used to stall / fail on cold API.
+  // Re-rank locally with tastes; optional single boost if general is thin.
+  const general = await searchTracks(q, limit).catch(() => [] as Track[]);
+  let boosted: Track[] = [];
+  if (general.length < Math.min(8, limit) && boostArtists[0]) {
+    boosted = await searchTracks(`${boostArtists[0].name} ${q}`, 12).catch(() => [] as Track[]);
+  }
 
-  const all = dedupeTracks([...boosted.flat(), ...general]);
+  const all = dedupeTracks([...boosted, ...general]);
   if (!preferred.length) return all.slice(0, limit);
 
   const preferredHits: { track: Track; score: number }[] = [];

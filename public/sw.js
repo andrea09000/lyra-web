@@ -1,5 +1,5 @@
 /* Lyra PWA — always pull the latest app from Vercel; Home icon URL never changes. */
-const CACHE = 'lyra-web-shell-v41';
+const CACHE = 'lyra-web-shell-v42';
 
 self.addEventListener('install', (event) => {
   // Activate new SW immediately on every deploy
@@ -20,6 +20,11 @@ self.addEventListener('message', (event) => {
     void self.skipWaiting();
   }
 });
+
+function isHtmlResponse(response) {
+  const ct = (response.headers.get('content-type') || '').toLowerCase();
+  return ct.includes('text/html');
+}
 
 self.addEventListener('fetch', (event) => {
   const { request } = event;
@@ -45,6 +50,14 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       fetch(request)
         .then((response) => {
+          // Never cache HTML as JS/CSS — that blank-screens the app after deploys
+          const wantsScript =
+            url.pathname.endsWith('.js') ||
+            url.pathname.startsWith('/_expo/') ||
+            request.destination === 'script';
+          if (wantsScript && isHtmlResponse(response)) {
+            return Response.error();
+          }
           if (response.ok && request.mode === 'navigate') {
             const copy = response.clone();
             void caches.open(CACHE).then((cache) => cache.put('/', copy));
@@ -52,7 +65,6 @@ self.addEventListener('fetch', (event) => {
           return response;
         })
         .catch(() => {
-          // Never serve HTML as JS/CSS — that blank-screens the app
           if (request.mode === 'navigate') {
             return caches.match('/').then((hit) => hit || Response.error());
           }

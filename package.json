@@ -56,8 +56,8 @@
     "start": "concurrently -k -n scrape,web -c magenta,cyan \"npm run scrape\" \"expo start --web --port 8090\"",
     "web": "npm start",
     "web:only": "expo start --web --port 8090",
-    "build": "expo export --platform web",
-    "deploy": "vercel --prod",
+    "build": "expo export --platform web && node scripts/patch-web-html.mjs",
+    "deploy": "npx vercel@latest deploy --prod --yes",
     "android": "expo start --android",
     "ios": "expo start --ios"
   },

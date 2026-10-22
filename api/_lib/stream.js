@@ -4,8 +4,10 @@ const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 const PIPED = [
+  'https://api.piped.private.coffee',
   'https://pipedapi.adminforge.de',
   'https://pipedapi.kavin.rocks',
+  'https://pipedapi.syncpundit.io',
 ];
 
 /** Bytes per response — larger init helps Safari start fragmented YouTube AAC. */

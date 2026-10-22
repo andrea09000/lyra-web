@@ -1,5 +1,5 @@
 {
-  "buildCommand": "npx expo export -p web",
+  "buildCommand": "npx expo export -p web && node scripts/patch-web-html.mjs",
   "outputDirectory": "dist",
   "framework": null,
   "installCommand": "npm install",
@@ -33,7 +33,7 @@
   },
   "rewrites": [
     {
-      "source": "/((?!api/).*)",
+      "source": "/((?!api/|_expo/|assets/|.*\\..*).*)",
       "destination": "/index.html"
     }
   ],

@@ -30,9 +30,19 @@ function getScrapeUrl(): string {
 }
 
 const SEED_INSTANCES = [
+  'https://yt.omada.cafe',
+  'https://echostreamz.com',
   'https://invidious.f5.si',
   'https://inv.nadeko.net',
   'https://yewtu.be',
+  'https://invidious.schenkel.eti.br',
+];
+
+const PIPED_INSTANCES = [
+  'https://api.piped.private.coffee',
+  'https://pipedapi.adminforge.de',
+  'https://pipedapi.kavin.rocks',
+  'https://pipedapi.syncpundit.io',
 ];
 
 const streamGen = new Map<string, number>();
@@ -99,13 +109,18 @@ async function fetchJson(url: string, timeoutMs = 3500): Promise<unknown> {
       headers: { Accept: 'application/json' },
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
+    const ct = (res.headers.get('content-type') || '').toLowerCase();
+    // Wrong Vercel project / SPA rewrite often returns HTML 200 — never treat as JSON
+    if (ct.includes('text/html')) throw new Error('HTML instead of JSON');
+    const data = await res.json();
+    if (data == null || typeof data !== 'object') throw new Error('invalid JSON');
+    return data;
   } finally {
     clearTimeout(timeout);
   }
 }
 
-async function scrapeGet<T>(path: string, timeoutMs = 2500): Promise<T | null> {
+async function scrapeGet<T>(path: string, timeoutMs = 18000): Promise<T | null> {
   try {
     const data = (await fetchJson(`${getScrapeUrl()}${path}`, timeoutMs)) as T;
     scrapeHealthy = true;
@@ -175,7 +190,8 @@ async function raceFirst<T>(tasks: Promise<T>[]): Promise<T> {
 async function searchInvidious(query: string, limit: number): Promise<Track[]> {
   const data = await withInstances((base) =>
     fetchJson(
-      `${base}/api/v1/search?q=${encodeURIComponent(musicSearchQuery(query))}&type=video&sort_by=relevance`
+      `${base}/api/v1/search?q=${encodeURIComponent(musicSearchQuery(query))}&type=video&sort_by=relevance`,
+      6000
     )
   );
   const list = Array.isArray(data) ? (data as InvidiousVideo[]) : [];
@@ -186,34 +202,79 @@ async function searchInvidious(query: string, limit: number): Promise<Track[]> {
     .slice(0, limit);
 }
 
+function videoIdFromUrl(url: string): string | null {
+  const m = String(url || '').match(
+    /[?&]v=([\w-]{11})|\/watch\?v=([\w-]{11})|youtu\.be\/([\w-]{11})|\/([\w-]{11})$/
+  );
+  return (m && (m[1] || m[2] || m[3] || m[4])) || null;
+}
+
+async function searchPipedClient(query: string, limit: number): Promise<Track[]> {
+  const q = encodeURIComponent(musicSearchQuery(query));
+  let lastErr: unknown;
+  for (const base of PIPED_INSTANCES) {
+    try {
+      const data = (await fetchJson(`${base.replace(/\/$/, '')}/search?q=${q}&filter=videos`, 8000)) as {
+        items?: { type?: string; url?: string; title?: string; uploaderName?: string; duration?: number; views?: number }[];
+      };
+      const tracks: Track[] = [];
+      for (const item of data.items || []) {
+        if (item.type !== 'stream' || !item.title) continue;
+        const id = videoIdFromUrl(item.url || '');
+        if (!id) continue;
+        tracks.push({
+          id,
+          title: cleanTitle(item.title),
+          artist: item.uploaderName || 'YouTube',
+          thumbnail: ytThumb(id),
+          duration: Number(item.duration || 0),
+          viewCount: Number(item.views || 0) || undefined,
+        });
+        if (tracks.length >= limit) break;
+      }
+      const filtered = tracks.filter(looksLikeMusic);
+      const out = filtered.length ? filtered : tracks;
+      if (out.length) return out.slice(0, limit);
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr || new Error('piped empty');
+}
+
+function normalizeSearchHits(tracks: Track[]): Track[] {
+  const filtered = tracks.filter(looksLikeMusic);
+  return filtered.length ? filtered : tracks;
+}
+
 export async function searchTracks(query: string, limit = 24): Promise<Track[]> {
   const q = query.trim();
   if (!q) return [];
 
   try {
     const cached = await getCachedSearch(q);
-    if (cached && cached.length >= limit) return cached.slice(0, limit);
+    if (cached && cached.length >= Math.min(limit, 8)) return cached.slice(0, limit);
   } catch {
     // miss
   }
 
+  // Race same-origin API + browser mirrors — first non-empty wins (survives wrong/cold deploy)
+  const racers: Promise<Track[]>[] = [
+    scrapeGet<{ tracks?: Track[] }>(`/api/search?q=${encodeURIComponent(q)}&limit=${limit}`, 18000).then(
+      (scraped) => {
+        if (!scraped?.tracks?.length) throw new Error('api empty');
+        return normalizeSearchHits(scraped.tracks);
+      }
+    ),
+    searchPipedClient(q, limit),
+    searchInvidious(q, limit),
+  ];
+
   let tracks: Track[] = [];
-
-  const scraped = await scrapeGet<{ tracks?: Track[] }>(
-    `/api/search?q=${encodeURIComponent(q)}&limit=${limit}`
-  );
-  if (scraped?.tracks?.length) {
-    const filtered = scraped.tracks.filter(looksLikeMusic);
-    // If the filter nuked everything, keep raw API hits anyway
-    tracks = filtered.length ? filtered : scraped.tracks;
-  }
-
-  if (!tracks.length) {
-    try {
-      tracks = await searchInvidious(q, limit);
-    } catch {
-      // mirrors often 403/502 — API already tried InnerTube/Piped
-    }
+  try {
+    tracks = await Promise.any(racers);
+  } catch {
+    // all failed
   }
 
   if (tracks.length > 0) void setCachedSearch(q, tracks);

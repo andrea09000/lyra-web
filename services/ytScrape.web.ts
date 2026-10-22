@@ -11,16 +11,19 @@ export type AudioCandidate = {
 
 /** Lean set of usually-alive mirrors (dead hosts waste race time). */
 const INV = [
+  'https://yt.omada.cafe',
+  'https://echostreamz.com',
   'https://invidious.f5.si',
   'https://inv.nadeko.net',
   'https://yewtu.be',
-  'https://invidious.jing.rocks',
-  'https://yt.omada.cafe',
+  'https://invidious.schenkel.eti.br',
 ];
 
 const PIPED = [
+  'https://api.piped.private.coffee',
   'https://pipedapi.adminforge.de',
   'https://pipedapi.kavin.rocks',
+  'https://pipedapi.syncpundit.io',
 ];
 
 const cache = new Map<string, { urls: AudioCandidate[]; expires: number }>();
