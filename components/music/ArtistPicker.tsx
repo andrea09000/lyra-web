@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  FlatList,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -61,7 +61,7 @@ export function ArtistPicker({
   const { colors } = useTheme();
   const { width: windowWidth } = useWindowDimensions();
   const width = Math.max(windowWidth || 360, 280);
-  const chip = (width - Spacing.lg * 2 - GAP * (COLS - 1)) / COLS;
+  const chip = Math.floor((width - Spacing.lg * 2 - GAP * (COLS - 1)) / COLS);
 
   const [query, setQuery] = useState('');
   const [catalog, setCatalog] = useState<TasteArtist[]>(() => [...TASTE_ARTISTS]);
@@ -133,13 +133,16 @@ export function ArtistPicker({
       return dedupeArtists([...extras, ...catalog]);
     }
 
-    // Instant local matches while network runs — never blank the grid while typing
     const localHits = [...catalog, ...pickedList].filter((a) => {
       const n = norm(a.name);
       return n.includes(qn) || qn.split(' ').every((t) => t.length < 2 || n.includes(t));
     });
 
-    return dedupeArtists([...localHits, ...remote, ...pickedList.filter((a) => norm(a.name).includes(qn))]);
+    return dedupeArtists([
+      ...localHits,
+      ...remote,
+      ...pickedList.filter((a) => norm(a.name).includes(qn)),
+    ]);
   }, [query, catalog, remote, picked]);
 
   return (
@@ -181,25 +184,17 @@ export function ArtistPicker({
         </Text>
       )}
 
-      <FlatList
+      {/* ScrollView + flexWrap — FlatList numColumns is invisible on RN Web */}
+      <ScrollView
         style={styles.list}
-        data={data}
-        keyExtractor={(item) => item.id}
-        numColumns={COLS}
-        columnWrapperStyle={{ gap: GAP, paddingHorizontal: Spacing.lg }}
-        contentContainerStyle={[
-          styles.listContent,
-          { paddingBottom: listPaddingBottom },
-          data.length === 0 ? styles.listEmptyPad : null,
-        ]}
+        contentContainerStyle={[styles.grid, { paddingBottom: listPaddingBottom }]}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         showsVerticalScrollIndicator={false}
-        initialNumToRender={15}
-        windowSize={10}
-        ListEmptyComponent={
+      >
+        {data.length === 0 ? (
           searching ? (
-            <ActivityIndicator color={colors.green} style={{ marginTop: 32 }} />
+            <ActivityIndicator color={colors.green} style={{ marginTop: 32, alignSelf: 'center' }} />
           ) : (
             <Text style={[styles.empty, { color: colors.muted }]}>
               {query.trim()
@@ -207,16 +202,18 @@ export function ArtistPicker({
                 : 'Caricamento artisti…'}
             </Text>
           )
-        }
-        renderItem={({ item }) => (
-          <ArtistChip
-            artist={item}
-            selected={Boolean(picked[item.id])}
-            onToggle={onToggle}
-            size={chip}
-          />
+        ) : (
+          data.map((item) => (
+            <ArtistChip
+              key={item.id}
+              artist={item}
+              selected={Boolean(picked[item.id])}
+              onToggle={onToggle}
+              size={chip}
+            />
+          ))
         )}
-      />
+      </ScrollView>
     </View>
   );
 }
@@ -224,8 +221,14 @@ export function ArtistPicker({
 const styles = StyleSheet.create({
   root: { flex: 1, minHeight: 0 },
   list: { flex: 1, minHeight: 0 },
-  listContent: { gap: 4, flexGrow: 1 },
-  listEmptyPad: { flexGrow: 1, justifyContent: 'center' },
+  grid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-start',
+    paddingHorizontal: Spacing.lg,
+    columnGap: GAP,
+    rowGap: 4,
+  },
   search: {
     marginHorizontal: Spacing.lg,
     marginBottom: 10,
@@ -250,10 +253,10 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   empty: {
+    width: '100%',
     textAlign: 'center',
     marginTop: 40,
     fontFamily: 'Sora_400Regular, system-ui, sans-serif',
     fontSize: 14,
-    paddingHorizontal: Spacing.lg,
   },
 });

@@ -5,7 +5,7 @@ import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { MAX_TASTE_PICKS } from '@/constants/artists';
-import { Radius, Spacing, Type } from '@/constants/theme';
+import { Radius, Spacing } from '@/constants/theme';
 import { BrandMark } from '@/components/ui/BrandMark';
 import { ArtistPicker } from '@/components/music/ArtistPicker';
 import { useLibrary } from '@/context/LibraryContext';
@@ -88,27 +88,42 @@ export default function OnboardingScreen() {
   }
 
   return (
-    <View style={[styles.rootFlat, { backgroundColor: colors.background, paddingTop: insets.top + 10 }]}>
-      <ArtistPicker
-        picked={picked}
-        onToggle={toggle}
-        header={
-          <View style={styles.pickerHeader}>
-            <Text style={[styles.pickerTitle, { color: colors.ink }]}>Chi ascolti?</Text>
-            <Text style={[styles.pickerSub, { color: colors.muted }]}>
-              Scegli {MAX_TASTE_PICKS} artisti.
-            </Text>
-            <Text style={[styles.counter, { color: colors.green }]}>
-              {selected.length}/{MAX_TASTE_PICKS}
-            </Text>
-          </View>
-        }
-      />
+    <View
+      style={[
+        styles.rootFlat,
+        {
+          backgroundColor: colors.background,
+          paddingTop: insets.top + 10,
+        },
+      ]}
+    >
+      <View style={styles.pickerWrap}>
+        <ArtistPicker
+          picked={picked}
+          onToggle={toggle}
+          listPaddingBottom={24}
+          header={
+            <View style={styles.pickerHeader}>
+              <Text style={[styles.pickerTitle, { color: colors.ink }]}>Chi ascolti?</Text>
+              <Text style={[styles.pickerSub, { color: colors.muted }]}>
+                Scegli {MAX_TASTE_PICKS} artisti.
+              </Text>
+              <Text style={[styles.counter, { color: colors.green }]}>
+                {selected.length}/{MAX_TASTE_PICKS}
+              </Text>
+            </View>
+          }
+        />
+      </View>
 
       <View
         style={[
           styles.footer,
-          { paddingBottom: insets.bottom + 16, backgroundColor: colors.background },
+          {
+            paddingBottom: Math.max(insets.bottom, 12) + 8,
+            backgroundColor: colors.background,
+            borderTopColor: colors.line,
+          },
         ]}
       >
         <Pressable
@@ -139,17 +154,24 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.lg,
     justifyContent: 'space-between',
   },
-  // minHeight: 0 so ArtistPicker FlatList gets real height on web
-  rootFlat: { flex: 1, minHeight: 0 },
+  rootFlat: {
+    flex: 1,
+    minHeight: 0,
+  },
+  pickerWrap: {
+    flex: 1,
+    minHeight: 0,
+  },
   mid: { gap: 14 },
   hero: {
-    fontFamily: Type.display,
+    fontFamily: 'system-ui, sans-serif',
+    fontWeight: '700',
     fontSize: 34,
     lineHeight: 40,
     letterSpacing: -0.8,
   },
   sub: {
-    fontFamily: Type.ui,
+    fontFamily: 'system-ui, sans-serif',
     fontSize: 15,
     lineHeight: 22,
     maxWidth: 320,
@@ -160,27 +182,27 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   pickerTitle: {
-    fontFamily: Type.display,
+    fontFamily: 'system-ui, sans-serif',
+    fontWeight: '700',
     fontSize: 28,
     letterSpacing: -0.5,
   },
   pickerSub: {
-    fontFamily: Type.ui,
+    fontFamily: 'system-ui, sans-serif',
     fontSize: 14,
     lineHeight: 20,
   },
   counter: {
-    fontFamily: Type.uiBold,
+    fontFamily: 'system-ui, sans-serif',
+    fontWeight: '700',
     fontSize: 13,
     marginTop: 4,
   },
+  // Normal flex footer — absolute positioning broke the web layout
   footer: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
     paddingHorizontal: Spacing.lg,
     paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
   },
   cta: {
     flexDirection: 'row',
@@ -192,7 +214,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
   },
   ctaText: {
-    fontFamily: Type.uiBold,
+    fontFamily: 'system-ui, sans-serif',
+    fontWeight: '700',
     fontSize: 15,
     color: '#FFF',
   },
