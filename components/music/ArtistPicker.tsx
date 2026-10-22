@@ -52,6 +52,14 @@ function dedupeArtists(list: TasteArtist[]): TasteArtist[] {
   return out;
 }
 
+function chunkRows<T>(list: T[], size: number): T[][] {
+  const rows: T[][] = [];
+  for (let i = 0; i < list.length; i += size) {
+    rows.push(list.slice(i, i + size));
+  }
+  return rows;
+}
+
 export function ArtistPicker({
   picked,
   onToggle,
@@ -61,7 +69,10 @@ export function ArtistPicker({
   const { colors } = useTheme();
   const { width: windowWidth } = useWindowDimensions();
   const width = Math.max(windowWidth || 360, 280);
-  const chip = Math.floor((width - Spacing.lg * 2 - GAP * (COLS - 1)) / COLS);
+  const chip = Math.max(
+    72,
+    Math.floor((width - Spacing.lg * 2 - GAP * (COLS - 1)) / COLS)
+  );
 
   const [query, setQuery] = useState('');
   const [catalog, setCatalog] = useState<TasteArtist[]>(() => [...TASTE_ARTISTS]);
@@ -145,6 +156,8 @@ export function ArtistPicker({
     ]);
   }, [query, catalog, remote, picked]);
 
+  const rows = useMemo(() => chunkRows(data, COLS), [data]);
+
   return (
     <View style={styles.root}>
       {header}
@@ -184,17 +197,16 @@ export function ArtistPicker({
         </Text>
       )}
 
-      {/* ScrollView + flexWrap — FlatList numColumns is invisible on RN Web */}
       <ScrollView
-        style={styles.list}
-        contentContainerStyle={[styles.grid, { paddingBottom: listPaddingBottom }]}
+        style={styles.scroller}
+        contentContainerStyle={{ paddingBottom: listPaddingBottom, paddingTop: 4 }}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
-        showsVerticalScrollIndicator={false}
+        showsVerticalScrollIndicator
       >
         {data.length === 0 ? (
           searching ? (
-            <ActivityIndicator color={colors.green} style={{ marginTop: 32, alignSelf: 'center' }} />
+            <ActivityIndicator color={colors.green} style={{ marginTop: 32 }} />
           ) : (
             <Text style={[styles.empty, { color: colors.muted }]}>
               {query.trim()
@@ -203,14 +215,24 @@ export function ArtistPicker({
             </Text>
           )
         ) : (
-          data.map((item) => (
-            <ArtistChip
-              key={item.id}
-              artist={item}
-              selected={Boolean(picked[item.id])}
-              onToggle={onToggle}
-              size={chip}
-            />
+          rows.map((row, rowIndex) => (
+            <View key={`row-${rowIndex}`} style={styles.row}>
+              {row.map((item) => (
+                <ArtistChip
+                  key={item.id}
+                  artist={item}
+                  selected={Boolean(picked[item.id])}
+                  onToggle={onToggle}
+                  size={chip}
+                />
+              ))}
+              {/* Pad incomplete last row so chips stay left-aligned */}
+              {row.length < COLS
+                ? Array.from({ length: COLS - row.length }).map((_, i) => (
+                    <View key={`pad-${i}`} style={{ width: chip }} />
+                  ))
+                : null}
+            </View>
           ))
         )}
       </ScrollView>
@@ -220,14 +242,13 @@ export function ArtistPicker({
 
 const styles = StyleSheet.create({
   root: { flex: 1, minHeight: 0 },
-  list: { flex: 1, minHeight: 0 },
-  grid: {
+  // Explicit scroll area — avoid flexWrap height:0 bug on RN Web
+  scroller: { flex: 1, minHeight: 200 },
+  row: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'flex-start',
+    justifyContent: 'space-between',
     paddingHorizontal: Spacing.lg,
-    columnGap: GAP,
-    rowGap: 4,
+    marginBottom: 2,
   },
   search: {
     marginHorizontal: Spacing.lg,
@@ -242,21 +263,22 @@ const styles = StyleSheet.create({
   },
   searchInput: {
     flex: 1,
-    fontFamily: 'Sora_400Regular, system-ui, sans-serif',
+    fontFamily: 'system-ui, sans-serif',
     fontSize: 15,
   },
   hint: {
     paddingHorizontal: Spacing.lg,
-    fontFamily: 'Sora_600SemiBold, system-ui, sans-serif',
+    fontFamily: 'system-ui, sans-serif',
+    fontWeight: '600',
     fontSize: 11,
     letterSpacing: 0.4,
     marginBottom: 10,
   },
   empty: {
-    width: '100%',
     textAlign: 'center',
     marginTop: 40,
-    fontFamily: 'Sora_400Regular, system-ui, sans-serif',
+    fontFamily: 'system-ui, sans-serif',
     fontSize: 14,
+    paddingHorizontal: Spacing.lg,
   },
 });
