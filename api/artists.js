@@ -15,7 +15,7 @@ module.exports = async function handler(req, res) {
 
   try {
     const q = String(req.query.q || '').trim();
-    const limit = Math.min(Math.max(Number(req.query.limit) || 1, 1), 5);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 1, 1), 12);
     if (!q) return res.status(200).json({ artists: [] });
 
     const channels = await searchChannels(q, limit);

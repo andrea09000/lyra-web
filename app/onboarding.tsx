@@ -139,7 +139,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.lg,
     justifyContent: 'space-between',
   },
-  rootFlat: { flex: 1 },
+  // minHeight: 0 so ArtistPicker FlatList gets real height on web
+  rootFlat: { flex: 1, minHeight: 0 },
   mid: { gap: 14 },
   hero: {
     fontFamily: Type.display,

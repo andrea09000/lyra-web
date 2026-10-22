@@ -304,10 +304,11 @@ function normalizeArtistName(name: string): string {
 export async function searchArtists(query: string, limit = 1): Promise<TasteArtist[]> {
   const q = query.trim();
   if (!q) return [];
-  const cap = Math.min(Math.max(limit, 1), 3);
+  const cap = Math.min(Math.max(limit, 1), 12);
 
   const scraped = await scrapeGet<{ artists?: TasteArtist[] }>(
-    `/api/artists?q=${encodeURIComponent(q)}&limit=${cap}`
+    `/api/artists?q=${encodeURIComponent(q)}&limit=${cap}`,
+    12000
   );
   if (scraped?.artists?.length) {
     return scraped.artists.map((a) => ({ ...a, color: a.color || colorForId(a.id) }));
@@ -359,42 +360,64 @@ export async function searchArtists(query: string, limit = 1): Promise<TasteArti
   return ranked;
 }
 
+function isUsableArtistImage(url?: string | null): boolean {
+  if (!url || typeof url !== 'string') return false;
+  const u = url.trim();
+  if (!u.startsWith('http')) return false;
+  // Prefer stable YouTube thumbs; reject empty/placeholder channel blobs
+  if (u.includes('i.ytimg.com/vi/')) return true;
+  if (u.includes('yt3.ggpht.com') || u.includes('googleusercontent.com')) return true;
+  return u.length > 12;
+}
+
 export async function hydrateArtistCovers(
   artists: TasteArtist[],
   onUpdate?: (list: TasteArtist[]) => void
 ): Promise<TasteArtist[]> {
-  const cache = await loadArtistImageCache();
+  // Show curated seeds first — never blank the grid waiting on network
+  onUpdate?.(artists.map((a) => ({ ...a })));
+
+  let cache: Record<string, string> = {};
+  try {
+    cache = await loadArtistImageCache();
+  } catch {
+    cache = {};
+  }
   const nextCache = { ...cache };
-  const results = artists.map((a) => (cache[a.id] ? { ...a, image: cache[a.id] } : { ...a }));
+  const results = artists.map((a) => {
+    const cached = cache[a.id];
+    if (isUsableArtistImage(cached)) return { ...a, image: cached };
+    return { ...a };
+  });
   onUpdate?.(results.map((a) => ({ ...a })));
 
-  const CONCURRENCY = 4;
+  const CONCURRENCY = 3;
   const push = () => onUpdate?.(results.map((a) => ({ ...a })));
 
   for (let i = 0; i < results.length; i += CONCURRENCY) {
     const batch = results.slice(i, i + CONCURRENCY).map((a, offset) => ({ a, idx: i + offset }));
     await Promise.all(
       batch.map(async ({ a, idx }) => {
-        const cached = cache[a.id];
-        if (cached && !cached.includes('i.ytimg.com/vi/')) return;
+        // Keep good YouTube video thumbs — only upgrade missing/broken covers
+        if (isUsableArtistImage(results[idx].image) && results[idx].image.includes('i.ytimg.com/vi/')) {
+          return;
+        }
         try {
           const found = await searchArtists(a.name, 3);
           const match =
             found.find((f) => f.name.toLowerCase() === a.name.toLowerCase()) ?? found[0];
           let image = match?.image;
-          if (!image) {
+          if (!isUsableArtistImage(image)) {
             const tracks = await searchTracks(a.query, 1);
             image = tracks[0]?.thumbnail;
           }
-          if (image && image !== results[idx].image) {
-            nextCache[a.id] = image;
-            results[idx] = { ...a, image };
+          if (isUsableArtistImage(image) && image !== results[idx].image) {
+            nextCache[a.id] = image!;
+            results[idx] = { ...results[idx], image: image! };
             push();
-          } else if (image) {
-            nextCache[a.id] = image;
           }
         } catch {
-          // keep seed
+          // keep seed thumb
         }
       })
     );

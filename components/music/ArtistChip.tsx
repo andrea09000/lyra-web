@@ -71,7 +71,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   name: {
-    fontFamily: 'Sora_600SemiBold',
+    fontFamily: 'Sora_600SemiBold, system-ui, sans-serif',
     fontSize: 12,
     textAlign: 'center',
     width: '100%',

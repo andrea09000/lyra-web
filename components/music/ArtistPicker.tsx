@@ -1,26 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Dimensions,
   FlatList,
   Pressable,
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { TASTE_ARTISTS } from '@/constants/artists';
+import { MAX_TASTE_PICKS, TASTE_ARTISTS } from '@/constants/artists';
 import { Radius, Spacing } from '@/constants/theme';
 import { ArtistChip } from '@/components/music/ArtistChip';
 import { TasteArtist } from '@/types/music';
 import { hydrateArtistCovers, searchArtists } from '@/services/youtube';
 import { useTheme } from '@/context/ThemeContext';
 
-const { width } = Dimensions.get('window');
 const COLS = 3;
 const GAP = 14;
-const CHIP = (width - Spacing.lg * 2 - GAP * (COLS - 1)) / COLS;
 
 type Props = {
   picked: Record<string, TasteArtist>;
@@ -36,8 +34,13 @@ export function ArtistPicker({
   listPaddingBottom = 120,
 }: Props) {
   const { colors } = useTheme();
+  const { width: windowWidth } = useWindowDimensions();
+  const width = Math.max(windowWidth || 360, 280);
+  const chip = (width - Spacing.lg * 2 - GAP * (COLS - 1)) / COLS;
+
   const [query, setQuery] = useState('');
-  const [catalog, setCatalog] = useState<TasteArtist[]>(TASTE_ARTISTS);
+  // Always seed immediately — never wait on network covers to show the grid
+  const [catalog, setCatalog] = useState<TasteArtist[]>(() => [...TASTE_ARTISTS]);
   const [results, setResults] = useState<TasteArtist[]>([]);
   const [hydrating, setHydrating] = useState(true);
   const [searching, setSearching] = useState(false);
@@ -48,13 +51,17 @@ export function ArtistPicker({
     let cancelled = false;
     setHydrating(true);
     void hydrateArtistCovers(TASTE_ARTISTS, (list) => {
-      if (!cancelled) setCatalog(list);
-    }).then((list) => {
-      if (!cancelled) {
-        setCatalog(list);
-        setHydrating(false);
-      }
-    });
+      if (!cancelled && list.length) setCatalog(list);
+    })
+      .then((list) => {
+        if (!cancelled && list.length) setCatalog(list);
+      })
+      .catch(() => {
+        // keep curated seeds
+      })
+      .finally(() => {
+        if (!cancelled) setHydrating(false);
+      });
     return () => {
       cancelled = true;
     };
@@ -73,7 +80,7 @@ export function ArtistPicker({
     const seq = ++seqRef.current;
     timer.current = setTimeout(async () => {
       try {
-        const found = await searchArtists(q, 1);
+        const found = await searchArtists(q, 12);
         if (seq !== seqRef.current) return;
         setResults(found);
       } catch {
@@ -82,7 +89,7 @@ export function ArtistPicker({
       } finally {
         if (seq === seqRef.current) setSearching(false);
       }
-    }, 400);
+    }, 350);
     return () => {
       if (timer.current) clearTimeout(timer.current);
     };
@@ -91,7 +98,6 @@ export function ArtistPicker({
   const data = useMemo(() => {
     const q = query.trim();
     if (q) return results;
-    // curated first, then selected artists not in catalog (from prior search)
     const ids = new Set(catalog.map((a) => a.id));
     const extras = Object.values(picked).filter((a) => !ids.has(a.id));
     return [...extras, ...catalog];
@@ -124,7 +130,7 @@ export function ArtistPicker({
 
       {!query.trim() ? (
         <Text style={[styles.hint, { color: colors.muted }]}>
-          Tutti gli artisti · cerca per trovarne altri
+          Tocca {MAX_TASTE_PICKS} artisti · cerca per trovarne altri
         </Text>
       ) : null}
 
@@ -134,13 +140,21 @@ export function ArtistPicker({
         keyExtractor={(item) => item.id}
         numColumns={COLS}
         columnWrapperStyle={{ gap: GAP, paddingHorizontal: Spacing.lg }}
-        contentContainerStyle={{ paddingBottom: listPaddingBottom, gap: 4 }}
+        contentContainerStyle={[
+          styles.listContent,
+          { paddingBottom: listPaddingBottom },
+          data.length === 0 ? styles.listEmptyPad : null,
+        ]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
+        initialNumToRender={12}
+        windowSize={8}
         ListEmptyComponent={
-          searching ? null : (
+          searching ? (
+            <ActivityIndicator color={colors.green} style={{ marginTop: 32 }} />
+          ) : (
             <Text style={[styles.empty, { color: colors.muted }]}>
-              {query.trim() ? 'Nessun artista trovato.' : 'Caricamento…'}
+              {query.trim() ? 'Nessun artista trovato.' : 'Caricamento artisti…'}
             </Text>
           )
         }
@@ -149,7 +163,7 @@ export function ArtistPicker({
             artist={item}
             selected={Boolean(picked[item.id])}
             onToggle={onToggle}
-            size={CHIP}
+            size={chip}
           />
         )}
       />
@@ -158,8 +172,11 @@ export function ArtistPicker({
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1 },
-  list: { flex: 1 },
+  // minHeight: 0 is required on web or the FlatList collapses to 0 height
+  root: { flex: 1, minHeight: 0 },
+  list: { flex: 1, minHeight: 0 },
+  listContent: { gap: 4, flexGrow: 1 },
+  listEmptyPad: { flexGrow: 1, justifyContent: 'center' },
   search: {
     marginHorizontal: Spacing.lg,
     marginBottom: 10,
@@ -173,12 +190,12 @@ const styles = StyleSheet.create({
   },
   searchInput: {
     flex: 1,
-    fontFamily: 'Sora_400Regular',
+    fontFamily: 'Sora_400Regular, system-ui, sans-serif',
     fontSize: 15,
   },
   hint: {
     paddingHorizontal: Spacing.lg,
-    fontFamily: 'Sora_600SemiBold',
+    fontFamily: 'Sora_600SemiBold, system-ui, sans-serif',
     fontSize: 11,
     letterSpacing: 1.2,
     marginBottom: 10,
@@ -186,7 +203,7 @@ const styles = StyleSheet.create({
   empty: {
     textAlign: 'center',
     marginTop: 40,
-    fontFamily: 'Sora_400Regular',
+    fontFamily: 'Sora_400Regular, system-ui, sans-serif',
     fontSize: 14,
     paddingHorizontal: Spacing.lg,
   },
