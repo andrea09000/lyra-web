@@ -15,17 +15,18 @@ module.exports = async function handler(req, res) {
 
   try {
     const q = String(req.query.q || '').trim();
-    const limit = Math.min(Math.max(Number(req.query.limit) || 1, 1), 12);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 8, 1), 16);
     if (!q) return res.status(200).json({ artists: [] });
 
     const channels = await searchChannels(q, limit);
     const artists = channels.map((a) => ({
       ...a,
       color: colorForId(a.id),
+      image: a.image || '',
     }));
 
-    res.setHeader('Cache-Control', 'public, s-maxage=300, stale-while-revalidate=900');
-    return res.status(200).json({ artists, source: 'search' });
+    res.setHeader('Cache-Control', 'public, s-maxage=120, stale-while-revalidate=600');
+    return res.status(200).json({ artists, source: 'search', count: artists.length });
   } catch (err) {
     return res.status(502).json({
       error: String(err?.message || err),

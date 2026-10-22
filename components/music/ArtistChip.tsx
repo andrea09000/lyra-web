@@ -14,6 +14,8 @@ type Props = {
 
 export function ArtistChip({ artist, selected, onToggle, size = 104 }: Props) {
   const { colors } = useTheme();
+  const initial = (artist.name?.trim()?.[0] || '?').toUpperCase();
+  const hasImage = Boolean(artist.image && /^https?:\/\//i.test(artist.image));
 
   return (
     <Pressable
@@ -31,12 +33,20 @@ export function ArtistChip({ artist, selected, onToggle, size = 104 }: Props) {
             height: size,
             borderRadius: size / 2,
             borderColor: selected ? colors.green : colors.line,
-            backgroundColor: artist.color,
+            backgroundColor: artist.color || colors.fog,
             borderWidth: selected ? 3 : 1,
           },
         ]}
       >
-        <CoverImage uri={artist.image} recyclingKey={artist.id} size="md" style={styles.avatar} />
+        {hasImage ? (
+          <CoverImage uri={artist.image} recyclingKey={artist.id} size="md" style={styles.avatar} />
+        ) : (
+          <View style={styles.letterWrap}>
+            <Text style={[styles.letter, { color: colors.ink, fontSize: Math.max(22, size * 0.32) }]}>
+              {initial}
+            </Text>
+          </View>
+        )}
         {selected ? (
           <View style={[styles.check, { backgroundColor: colors.green }]}>
             <Ionicons name="checkmark" size={14} color="#FFFFFF" />
@@ -59,6 +69,15 @@ const styles = StyleSheet.create({
   avatar: {
     width: '100%',
     height: '100%',
+  },
+  letterWrap: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  letter: {
+    fontFamily: 'Sora_700Bold, system-ui, sans-serif',
+    fontWeight: '700',
   },
   check: {
     position: 'absolute',

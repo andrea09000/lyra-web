@@ -11,8 +11,28 @@ const PIPED = [
 ];
 
 function videoIdFromUrl(url) {
-  const m = String(url || '').match(/[?&]v=([\w-]{11})|\/watch\?v=([\w-]{11})|youtu\.be\/([\w-]{11})|\/([\w-]{11})$/);
+  const m = String(url || '').match(
+    /[?&]v=([\w-]{11})|\/watch\?v=([\w-]{11})|youtu\.be\/([\w-]{11})|\/([\w-]{11})$/
+  );
   return (m && (m[1] || m[2] || m[3] || m[4])) || null;
+}
+
+/** Piped proxies ggpht via ?host= — unwrap to a CDN URL the phone can load. */
+function normalizeChannelImage(url) {
+  if (!url) return '';
+  let u = String(url).trim();
+  if (!u) return '';
+  if (u.startsWith('//')) u = `https:${u}`;
+  try {
+    const parsed = new URL(u);
+    const host = parsed.searchParams.get('host');
+    if (host && /(ggpht|googleusercontent)\.com$/i.test(host)) {
+      return `https://${host}${parsed.pathname}`;
+    }
+  } catch {
+    // keep
+  }
+  return u;
 }
 
 function mapPipedItem(item) {
@@ -130,15 +150,66 @@ async function searchTracks(query, limit = 24) {
   }
 }
 
-async function searchChannels(query, limit = 3) {
-  const q = String(query || '').trim();
-  if (!q) return [];
+function channelFromNode(node) {
+  const id =
+    node?.id ||
+    node?.author?.id ||
+    node?.channel_id ||
+    (typeof node?.author === 'object' ? node.author?.id : null);
+  const name =
+    node?.author?.name ||
+    node?.title?.text ||
+    (typeof node?.title === 'string' ? node.title : '') ||
+    node?.name ||
+    '';
+  if (!id || !name) return null;
+  let image =
+    node?.author?.best_thumbnail?.url ||
+    node?.author?.thumbnails?.[0]?.url ||
+    node?.thumbnails?.[0]?.url ||
+    node?.thumbnail?.url ||
+    '';
+  image = normalizeChannelImage(image);
+  const cleanName = String(name).replace(/\s*-\s*Topic\s*$/i, '').replace(/\s*\(tema\)\s*$/i, '').trim();
+  if (!cleanName) return null;
+  return {
+    id: `ch_${id}`,
+    name: cleanName,
+    query: `${cleanName} official music`,
+    image,
+  };
+}
 
-  // Piped channels
+async function searchInnertubeChannels(query, limit) {
+  const { Innertube } = await import('youtubei.js');
+  const yt = await Innertube.create({
+    lang: 'it',
+    location: 'IT',
+    retrieve_player: false,
+  });
+  const result = await yt.search(query, { type: 'channel' });
+  const out = [];
+  const seen = new Set();
+  for (const node of result.results || []) {
+    const ch = channelFromNode(node);
+    if (!ch) continue;
+    const key = ch.name.toLowerCase();
+    if (seen.has(key) || seen.has(ch.id)) continue;
+    seen.add(key);
+    seen.add(ch.id);
+    out.push(ch);
+    if (out.length >= limit) break;
+  }
+  if (!out.length) throw new Error('innertube channels empty');
+  return out;
+}
+
+async function searchPipedChannels(query, limit) {
+  let lastErr;
   for (const base of PIPED) {
     try {
       const res = await fetch(
-        `${base.replace(/\/$/, '')}/search?q=${encodeURIComponent(q)}&filter=channels`,
+        `${base.replace(/\/$/, '')}/search?q=${encodeURIComponent(query)}&filter=channels`,
         {
           headers: { Accept: 'application/json' },
           signal: AbortSignal.timeout(8000),
@@ -148,52 +219,118 @@ async function searchChannels(query, limit = 3) {
       if (!res.ok) continue;
       const data = await res.json();
       const out = [];
+      const seen = new Set();
       for (const item of data.items || []) {
         if (item.type !== 'channel' || !item.name) continue;
         const chId = String(item.url || '').replace(/^\/channel\//, '');
         if (!chId) continue;
-        let image = item.thumbnail || item.uploaderAvatar || '';
-        if (image.startsWith('//')) image = `https:${image}`;
+        const name = String(item.name).replace(/\s*-\s*Topic\s*$/i, '').trim();
+        const key = name.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
         out.push({
           id: `ch_${chId}`,
-          name: String(item.name).replace(/\s*-\s*Topic\s*$/i, '').trim(),
-          query: `${item.name} official music`,
-          image,
+          name,
+          query: `${name} official music`,
+          image: normalizeChannelImage(item.thumbnail || item.uploaderAvatar || ''),
         });
         if (out.length >= limit) break;
       }
       if (out.length) return out;
-    } catch {
-      // next
+    } catch (err) {
+      lastErr = err;
     }
   }
+  throw lastErr || new Error('piped channels empty');
+}
 
-  // Invidious channels
+async function searchInvidiousChannels(query, limit) {
+  const { data } = await withInv(
+    `/api/v1/search?q=${encodeURIComponent(query)}&type=channel`,
+    5000
+  );
+  const list = Array.isArray(data) ? data : [];
+  const out = [];
+  const seen = new Set();
+  for (const ch of list) {
+    if (!ch.authorId || !ch.author) continue;
+    const name = String(ch.author).replace(/\s*-\s*Topic\s*$/i, '').trim();
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const thumbs = [...(ch.authorThumbnails || [])].sort((a, b) => b.width - a.width);
+    out.push({
+      id: `ch_${ch.authorId}`,
+      name,
+      query: `${name} official music`,
+      image: normalizeChannelImage(thumbs[0]?.url || ''),
+    });
+    if (out.length >= limit) break;
+  }
+  if (!out.length) throw new Error('invidious channels empty');
+  return out;
+}
+
+/** Artists from video search when channel APIs fail — always something to pick. */
+async function searchArtistsFromVideos(query, limit) {
+  const { tracks } = await searchTracks(`${query} official`, Math.max(limit * 3, 18));
+  const out = [];
+  const seen = new Set();
+  for (const t of tracks) {
+    const name = String(t.artist || '').replace(/\s*-\s*Topic\s*$/i, '').trim();
+    const key = name.toLowerCase();
+    if (!name || key === 'youtube' || seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      id: `art_${t.id}`,
+      name,
+      query: `${name} official music`,
+      image: t.thumbnail || ytThumb(t.id),
+    });
+    if (out.length >= limit) break;
+  }
+  if (!out.length) throw new Error('video-artists empty');
+  return out;
+}
+
+async function searchChannels(query, limit = 8) {
+  const q = String(query || '').trim();
+  if (!q) return [];
+  const cap = Math.min(Math.max(Number(limit) || 8, 1), 16);
+
+  const errors = [];
+  const runners = [
+    withTimeout(searchInnertubeChannels(q, cap), 12000, 'yt-ch').catch((err) => {
+      errors.push(`yt:${err?.message || err}`);
+      throw err;
+    }),
+    withTimeout(searchPipedChannels(q, cap), 9000, 'piped-ch').catch((err) => {
+      errors.push(`piped:${err?.message || err}`);
+      throw err;
+    }),
+    withTimeout(searchInvidiousChannels(q, cap), 7000, 'inv-ch').catch((err) => {
+      errors.push(`inv:${err?.message || err}`);
+      throw err;
+    }),
+    withTimeout(searchArtistsFromVideos(q, cap), 14000, 'vid-ch').catch((err) => {
+      errors.push(`vid:${err?.message || err}`);
+      throw err;
+    }),
+  ];
+
   try {
-    const { data } = await withInv(
-      `/api/v1/search?q=${encodeURIComponent(q)}&type=channel`,
-      5000
-    );
-    const list = Array.isArray(data) ? data : [];
-    const out = [];
-    for (const ch of list) {
-      if (!ch.authorId || !ch.author) continue;
-      const thumbs = [...(ch.authorThumbnails || [])].sort((a, b) => b.width - a.width);
-      let image = thumbs[0]?.url || '';
-      if (image.startsWith('//')) image = `https:${image}`;
-      if (!image) continue;
-      out.push({
-        id: `ch_${ch.authorId}`,
-        name: String(ch.author).replace(/\s*-\s*Topic\s*$/i, '').trim(),
-        query: `${ch.author} official music`,
-        image,
-      });
-      if (out.length >= limit) break;
-    }
-    return out;
+    return await Promise.any(runners);
   } catch {
+    // Last ditch: empty rather than throw — UI can still filter local seeds
+    console.warn('[searchChannels]', errors.join(' | '));
     return [];
   }
 }
 
-module.exports = { searchTracks, searchChannels, searchPiped, searchInnertube };
+module.exports = {
+  searchTracks,
+  searchChannels,
+  searchPiped,
+  searchInnertube,
+  normalizeChannelImage,
+};

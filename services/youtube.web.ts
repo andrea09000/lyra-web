@@ -301,63 +301,155 @@ function normalizeArtistName(name: string): string {
     .trim();
 }
 
-export async function searchArtists(query: string, limit = 1): Promise<TasteArtist[]> {
-  const q = query.trim();
-  if (!q) return [];
-  const cap = Math.min(Math.max(limit, 1), 12);
-
-  const scraped = await scrapeGet<{ artists?: TasteArtist[] }>(
-    `/api/artists?q=${encodeURIComponent(q)}&limit=${cap}`,
-    12000
-  );
-  if (scraped?.artists?.length) {
-    return scraped.artists.map((a) => ({ ...a, color: a.color || colorForId(a.id) }));
-  }
-
-  // Invidious channel search
+function normalizeChannelImage(url?: string | null): string {
+  if (!url) return '';
+  let u = String(url).trim();
+  if (!u) return '';
+  if (u.startsWith('//')) u = `https:${u}`;
   try {
-    const data = await withInstances((base) =>
-      fetchJson(`${base}/api/v1/search?q=${encodeURIComponent(q)}&type=channel`)
-    );
-    const list = Array.isArray(data) ? (data as { author?: string; authorId?: string; authorThumbnails?: { url: string; width: number }[] }[]) : [];
-    const out: TasteArtist[] = [];
-    for (const ch of list) {
-      if (!ch.authorId || !ch.author) continue;
-      const thumbs = [...(ch.authorThumbnails ?? [])].sort((a, b) => b.width - a.width);
-      let image = thumbs[0]?.url || '';
-      if (image.startsWith('//')) image = `https:${image}`;
-      if (!image) continue;
-      out.push({
-        id: `ch_${ch.authorId}`,
-        name: ch.author.replace(/\s*-\s*Topic\s*$/i, '').trim(),
-        query: `${ch.author} official music`,
-        image,
-        color: colorForId(ch.authorId),
-      });
-      if (out.length >= cap) break;
+    const parsed = new URL(u);
+    const host = parsed.searchParams.get('host');
+    if (host && /(ggpht|googleusercontent)\.com$/i.test(host)) {
+      return `https://${host}${parsed.pathname}`;
     }
-    if (out.length) return out;
   } catch {
-    // fall through
+    // keep
   }
+  return u;
+}
 
-  const tracks = await searchTracks(`${q} official`, 12);
-  const seen = new Set<string>();
+function dedupeArtistList(list: TasteArtist[]): TasteArtist[] {
+  const out: TasteArtist[] = [];
+  const seenId = new Set<string>();
+  const seenName = new Set<string>();
+  for (const a of list) {
+    if (!a?.id || !a?.name) continue;
+    const key = normalizeArtistName(a.name);
+    if (seenId.has(a.id) || (key && seenName.has(key))) continue;
+    seenId.add(a.id);
+    if (key) seenName.add(key);
+    out.push({
+      ...a,
+      image: normalizeChannelImage(a.image) || a.image,
+      color: a.color || colorForId(a.id),
+    });
+  }
+  return out;
+}
+
+async function searchArtistsPiped(query: string, limit: number): Promise<TasteArtist[]> {
+  let lastErr: unknown;
+  for (const base of PIPED_INSTANCES) {
+    try {
+      const data = (await fetchJson(
+        `${base.replace(/\/$/, '')}/search?q=${encodeURIComponent(query)}&filter=channels`,
+        8000
+      )) as {
+        items?: {
+          type?: string;
+          url?: string;
+          name?: string;
+          thumbnail?: string;
+          uploaderAvatar?: string;
+        }[];
+      };
+      const out: TasteArtist[] = [];
+      for (const item of data.items || []) {
+        if (item.type !== 'channel' || !item.name) continue;
+        const chId = String(item.url || '').replace(/^\/channel\//, '');
+        if (!chId) continue;
+        const name = item.name.replace(/\s*-\s*Topic\s*$/i, '').trim();
+        out.push({
+          id: `ch_${chId}`,
+          name,
+          query: `${name} official music`,
+          image: normalizeChannelImage(item.thumbnail || item.uploaderAvatar || ''),
+          color: colorForId(chId),
+        });
+        if (out.length >= limit) break;
+      }
+      if (out.length) return out;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr || new Error('piped channels empty');
+}
+
+async function searchArtistsInvidious(query: string, limit: number): Promise<TasteArtist[]> {
+  const data = await withInstances((base) =>
+    fetchJson(`${base}/api/v1/search?q=${encodeURIComponent(query)}&type=channel`, 6000)
+  );
+  const list = Array.isArray(data)
+    ? (data as {
+        author?: string;
+        authorId?: string;
+        authorThumbnails?: { url: string; width: number }[];
+      }[])
+    : [];
+  const out: TasteArtist[] = [];
+  for (const ch of list) {
+    if (!ch.authorId || !ch.author) continue;
+    const thumbs = [...(ch.authorThumbnails ?? [])].sort((a, b) => b.width - a.width);
+    const name = ch.author.replace(/\s*-\s*Topic\s*$/i, '').trim();
+    out.push({
+      id: `ch_${ch.authorId}`,
+      name,
+      query: `${name} official music`,
+      image: normalizeChannelImage(thumbs[0]?.url || ''),
+      color: colorForId(ch.authorId),
+    });
+    if (out.length >= limit) break;
+  }
+  if (!out.length) throw new Error('invidious channels empty');
+  return out;
+}
+
+async function searchArtistsFromTracks(query: string, limit: number): Promise<TasteArtist[]> {
+  const tracks = await searchTracks(`${query} official`, Math.max(limit * 3, 18));
   const ranked: TasteArtist[] = [];
+  const seen = new Set<string>();
   for (const t of tracks) {
     const key = normalizeArtistName(t.artist);
-    if (!key || seen.has(key) || !t.thumbnail) continue;
+    if (!key || key === 'youtube' || seen.has(key)) continue;
     seen.add(key);
     ranked.push({
       id: `art_${t.id}`,
       name: t.artist,
       query: `${t.artist} official music`,
-      image: t.thumbnail,
+      image: t.thumbnail || ytThumb(t.id),
       color: colorForId(t.id),
     });
-    if (ranked.length >= cap) break;
+    if (ranked.length >= limit) break;
   }
+  if (!ranked.length) throw new Error('track artists empty');
   return ranked;
+}
+
+export async function searchArtists(query: string, limit = 1): Promise<TasteArtist[]> {
+  const q = query.trim();
+  if (!q) return [];
+  const cap = Math.min(Math.max(limit, 1), 16);
+
+  const racers: Promise<TasteArtist[]>[] = [
+    scrapeGet<{ artists?: TasteArtist[] }>(
+      `/api/artists?q=${encodeURIComponent(q)}&limit=${cap}`,
+      14000
+    ).then((scraped) => {
+      if (!scraped?.artists?.length) throw new Error('api artists empty');
+      return scraped.artists;
+    }),
+    searchArtistsPiped(q, cap),
+    searchArtistsInvidious(q, cap),
+    searchArtistsFromTracks(q, cap),
+  ];
+
+  try {
+    const first = await Promise.any(racers);
+    return dedupeArtistList(first).slice(0, cap);
+  } catch {
+    return [];
+  }
 }
 
 function isUsableArtistImage(url?: string | null): boolean {
