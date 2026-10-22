@@ -100,7 +100,10 @@ export default function OnboardingScreen() {
 
 const styles: Record<string, CSSProperties> = {
   welcome: {
-    minHeight: '100dvh',
+    // Escape broken RN Stack parent height (often negative / 0 on web)
+    position: 'fixed',
+    inset: 0,
+    zIndex: 50,
     boxSizing: 'border-box',
     background: '#0A0A0A',
     color: '#FFFFFF',
@@ -135,8 +138,9 @@ const styles: Record<string, CSSProperties> = {
     maxWidth: 320,
   },
   shell: {
-    height: '100dvh',
-    maxHeight: '100dvh',
+    position: 'fixed',
+    inset: 0,
+    zIndex: 50,
     boxSizing: 'border-box',
     background: '#0A0A0A',
     color: '#FFFFFF',
@@ -146,7 +150,7 @@ const styles: Record<string, CSSProperties> = {
     overflow: 'hidden',
   },
   picker: {
-    flex: 1,
+    flex: '1 1 auto',
     minHeight: 0,
     overflow: 'hidden',
     display: 'flex',
