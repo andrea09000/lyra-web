@@ -195,11 +195,13 @@ const styles: Record<string, CSSProperties> = {
   root: {
     flex: 1,
     minHeight: 0,
+    height: '100%',
     overflowY: 'auto',
     overflowX: 'hidden',
     WebkitOverflowScrolling: 'touch',
     background: '#0A0A0A',
     color: '#FFFFFF',
+    boxSizing: 'border-box',
   },
   headerSlot: {
     color: '#FFFFFF',
