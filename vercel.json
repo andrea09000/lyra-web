@@ -1,0 +1,78 @@
+{
+  "buildCommand": "npx expo export -p web",
+  "outputDirectory": "dist",
+  "framework": null,
+  "installCommand": "npm install",
+  "functions": {
+    "api/audio/[id].js": {
+      "maxDuration": 30,
+      "memory": 1024
+    },
+    "api/s/[id].js": {
+      "maxDuration": 30,
+      "memory": 1024
+    },
+    "api/play/[id].js": {
+      "maxDuration": 25,
+      "memory": 1024
+    },
+    "api/search.js": {
+      "maxDuration": 25,
+      "memory": 1024
+    },
+    "api/artists.js": {
+      "maxDuration": 20
+    },
+    "api/trending.js": {
+      "maxDuration": 25,
+      "memory": 1024
+    },
+    "api/spotify.js": {
+      "maxDuration": 30
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/((?!api/).*)",
+      "destination": "/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=0, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/sw.js",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=0, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/index.html",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=0, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/_expo/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    }
+  ]
+}
