@@ -74,7 +74,10 @@ export function ArtistChip({ artist, selected, onToggle, size = 104 }: Props) {
           </View>
         ) : null}
       </View>
-      <Text style={[styles.name, { color: colors.ink }]} numberOfLines={2}>
+      <Text
+        style={[styles.name, { color: colors.ink, width: size }]}
+        numberOfLines={2}
+      >
         {artist.name}
       </Text>
     </Pressable>
@@ -82,7 +85,12 @@ export function ArtistChip({ artist, selected, onToggle, size = 104 }: Props) {
 }
 
 const styles = StyleSheet.create({
-  wrap: { marginBottom: 14, alignItems: 'center' },
+  wrap: {
+    marginBottom: 14,
+    alignItems: 'center',
+    // Keep chip height stable on RN Web (name Text used to collapse to 0)
+    overflow: 'visible',
+  },
   frame: {
     overflow: 'hidden',
     marginBottom: 8,
@@ -106,7 +114,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   letter: {
-    fontFamily: 'system-ui, sans-serif',
     fontWeight: '700',
   },
   check: {
@@ -118,12 +125,13 @@ const styles = StyleSheet.create({
     borderRadius: 13,
     alignItems: 'center',
     justifyContent: 'center',
+    zIndex: 2,
   },
   name: {
-    fontFamily: 'system-ui, sans-serif',
     fontWeight: '600',
     fontSize: 12,
+    lineHeight: 16,
+    minHeight: 32,
     textAlign: 'center',
-    width: '100%',
   },
 });

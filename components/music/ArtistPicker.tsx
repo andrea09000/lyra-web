@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -18,12 +18,12 @@ import { hydrateArtistCovers, searchArtists } from '@/services/youtube';
 import { useTheme } from '@/context/ThemeContext';
 
 const COLS = 3;
-const GAP = 14;
+const GAP = 12;
 
 type Props = {
   picked: Record<string, TasteArtist>;
   onToggle: (artist: TasteArtist) => void;
-  header?: React.ReactNode;
+  header?: ReactNode;
   listPaddingBottom?: number;
 };
 
@@ -54,9 +54,7 @@ function dedupeArtists(list: TasteArtist[]): TasteArtist[] {
 
 function chunkRows<T>(list: T[], size: number): T[][] {
   const rows: T[][] = [];
-  for (let i = 0; i < list.length; i += size) {
-    rows.push(list.slice(i, i + size));
-  }
+  for (let i = 0; i < list.length; i += size) rows.push(list.slice(i, i + size));
   return rows;
 }
 
@@ -64,20 +62,19 @@ export function ArtistPicker({
   picked,
   onToggle,
   header,
-  listPaddingBottom = 120,
+  listPaddingBottom = 24,
 }: Props) {
   const { colors } = useTheme();
   const { width: windowWidth } = useWindowDimensions();
   const width = Math.max(windowWidth || 360, 280);
   const chip = Math.max(
-    72,
+    88,
     Math.floor((width - Spacing.lg * 2 - GAP * (COLS - 1)) / COLS)
   );
 
   const [query, setQuery] = useState('');
   const [catalog, setCatalog] = useState<TasteArtist[]>(() => [...TASTE_ARTISTS]);
   const [remote, setRemote] = useState<TasteArtist[]>([]);
-  const [hydrating, setHydrating] = useState(true);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -85,17 +82,13 @@ export function ArtistPicker({
 
   useEffect(() => {
     let cancelled = false;
-    setHydrating(true);
     void hydrateArtistCovers(TASTE_ARTISTS, (list) => {
       if (!cancelled && list.length) setCatalog(list);
     })
       .then((list) => {
         if (!cancelled && list.length) setCatalog(list);
       })
-      .catch(() => undefined)
-      .finally(() => {
-        if (!cancelled) setHydrating(false);
-      });
+      .catch(() => undefined);
     return () => {
       cancelled = true;
     };
@@ -134,33 +127,31 @@ export function ArtistPicker({
   }, [query]);
 
   const data = useMemo(() => {
-    const q = query.trim();
-    const qn = norm(q);
+    const qn = norm(query.trim());
     const pickedList = Object.values(picked);
-
     if (!qn) {
       const ids = new Set(catalog.map((a) => a.id));
-      const extras = pickedList.filter((a) => !ids.has(a.id));
-      return dedupeArtists([...extras, ...catalog]);
+      return dedupeArtists([...pickedList.filter((a) => !ids.has(a.id)), ...catalog]);
     }
-
     const localHits = [...catalog, ...pickedList].filter((a) => {
       const n = norm(a.name);
       return n.includes(qn) || qn.split(' ').every((t) => t.length < 2 || n.includes(t));
     });
-
-    return dedupeArtists([
-      ...localHits,
-      ...remote,
-      ...pickedList.filter((a) => norm(a.name).includes(qn)),
-    ]);
+    return dedupeArtists([...localHits, ...remote]);
   }, [query, catalog, remote, picked]);
 
   const rows = useMemo(() => chunkRows(data, COLS), [data]);
 
   return (
-    <View style={styles.root}>
+    <ScrollView
+      style={styles.scroller}
+      contentContainerStyle={{ paddingBottom: listPaddingBottom }}
+      keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="on-drag"
+      showsVerticalScrollIndicator
+    >
       {header}
+
       <View style={[styles.search, { borderColor: colors.line, backgroundColor: colors.elev2 }]}>
         <Ionicons name="search" size={18} color={colors.muted} />
         <TextInput
@@ -174,7 +165,7 @@ export function ArtistPicker({
           returnKeyType="search"
           clearButtonMode="while-editing"
         />
-        {searching || (hydrating && !query.trim()) ? (
+        {searching ? (
           <ActivityIndicator color={colors.green} size="small" />
         ) : query.trim() ? (
           <Pressable onPress={() => setQuery('')} hitSlop={8}>
@@ -183,72 +174,57 @@ export function ArtistPicker({
         ) : null}
       </View>
 
-      {!query.trim() ? (
-        <Text style={[styles.hint, { color: colors.muted }]}>
-          Tocca {MAX_TASTE_PICKS} artisti · cerca per trovarne di tutti
-        </Text>
-      ) : searching ? (
-        <Text style={[styles.hint, { color: colors.muted }]}>Cerco “{query.trim()}”…</Text>
-      ) : searchError && data.length === 0 ? (
-        <Text style={[styles.hint, { color: colors.danger }]}>{searchError}</Text>
-      ) : (
-        <Text style={[styles.hint, { color: colors.muted }]}>
-          {data.length} risultat{data.length === 1 ? 'o' : 'i'} · tocca per selezionare
-        </Text>
-      )}
+      <Text style={[styles.hint, { color: searchError && !data.length ? colors.danger : colors.muted }]}>
+        {!query.trim()
+          ? `Tocca ${MAX_TASTE_PICKS} artisti · cerca per trovarne di tutti`
+          : searching
+            ? `Cerco “${query.trim()}”…`
+            : searchError && !data.length
+              ? searchError
+              : `${data.length} risultat${data.length === 1 ? 'o' : 'i'} · tocca per selezionare`}
+      </Text>
 
-      <ScrollView
-        style={styles.scroller}
-        contentContainerStyle={{ paddingBottom: listPaddingBottom, paddingTop: 4 }}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="on-drag"
-        showsVerticalScrollIndicator
-      >
-        {data.length === 0 ? (
-          searching ? (
-            <ActivityIndicator color={colors.green} style={{ marginTop: 32 }} />
-          ) : (
-            <Text style={[styles.empty, { color: colors.muted }]}>
-              {query.trim()
-                ? 'Nessun artista trovato. Prova un altro nome.'
-                : 'Caricamento artisti…'}
-            </Text>
-          )
+      {data.length === 0 ? (
+        searching ? (
+          <ActivityIndicator color={colors.green} style={{ marginTop: 28 }} />
         ) : (
-          rows.map((row, rowIndex) => (
-            <View key={`row-${rowIndex}`} style={styles.row}>
-              {row.map((item) => (
-                <ArtistChip
-                  key={item.id}
-                  artist={item}
-                  selected={Boolean(picked[item.id])}
-                  onToggle={onToggle}
-                  size={chip}
-                />
-              ))}
-              {/* Pad incomplete last row so chips stay left-aligned */}
-              {row.length < COLS
-                ? Array.from({ length: COLS - row.length }).map((_, i) => (
-                    <View key={`pad-${i}`} style={{ width: chip }} />
-                  ))
-                : null}
-            </View>
-          ))
-        )}
-      </ScrollView>
-    </View>
+          <Text style={[styles.empty, { color: colors.muted }]}>
+            {query.trim() ? 'Nessun artista trovato.' : 'Caricamento…'}
+          </Text>
+        )
+      ) : (
+        rows.map((row, rowIndex) => (
+          <View key={`row-${rowIndex}`} style={styles.row}>
+            {row.map((item) => (
+              <ArtistChip
+                key={item.id}
+                artist={item}
+                selected={Boolean(picked[item.id])}
+                onToggle={onToggle}
+                size={chip}
+              />
+            ))}
+            {row.length < COLS
+              ? Array.from({ length: COLS - row.length }).map((_, i) => (
+                  <View key={`pad-${i}`} style={{ width: chip }} />
+                ))
+              : null}
+          </View>
+        ))
+      )}
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, minHeight: 0 },
-  // Explicit scroll area — avoid flexWrap height:0 bug on RN Web
-  scroller: { flex: 1, minHeight: 200 },
+  scroller: {
+    flex: 1,
+    minHeight: 0,
+  },
   row: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     paddingHorizontal: Spacing.lg,
-    marginBottom: 2,
   },
   search: {
     marginHorizontal: Spacing.lg,
@@ -263,21 +239,18 @@ const styles = StyleSheet.create({
   },
   searchInput: {
     flex: 1,
-    fontFamily: 'system-ui, sans-serif',
     fontSize: 15,
+    color: '#fff',
   },
   hint: {
     paddingHorizontal: Spacing.lg,
-    fontFamily: 'system-ui, sans-serif',
+    fontSize: 12,
     fontWeight: '600',
-    fontSize: 11,
-    letterSpacing: 0.4,
-    marginBottom: 10,
+    marginBottom: 12,
   },
   empty: {
     textAlign: 'center',
-    marginTop: 40,
-    fontFamily: 'system-ui, sans-serif',
+    marginTop: 28,
     fontSize: 14,
     paddingHorizontal: Spacing.lg,
   },
