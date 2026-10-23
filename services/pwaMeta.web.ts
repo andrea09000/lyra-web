@@ -67,10 +67,23 @@ body {
   background-color: ${background} !important;
 }
 #root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
   min-height: 100%;
   min-height: 100dvh;
   min-height: -webkit-fill-available;
   background-color: ${background} !important;
+  position: relative;
+}
+/* Fill viewport — do not center (centering collapses RN Web to 0 height) */
+#root > * {
+  flex: 1 1 auto !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 100% !important;
+  min-height: 100dvh !important;
+  align-self: stretch !important;
 }
 /* Kill legacy status overlay that clipped page titles */
 #lyra-status-fill {
