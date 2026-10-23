@@ -99,11 +99,19 @@ function RootNav() {
   return (
     <>
       <StatusBar style={isDark ? 'light' : 'dark'} />
-      <View style={{ flex: 1, backgroundColor: colors.background }}>
+      <View
+        style={[
+          { flex: 1, backgroundColor: colors.background },
+          Platform.OS === 'web' ? { height: '100%' as const, width: '100%' as const } : null,
+        ]}
+      >
         <Stack
           screenOptions={{
             headerShown: false,
-            contentStyle: { backgroundColor: colors.background },
+            contentStyle: {
+              backgroundColor: colors.background,
+              ...(Platform.OS === 'web' ? { flex: 1, height: '100%' as const } : {}),
+            },
             animation: 'fade',
           }}
         >

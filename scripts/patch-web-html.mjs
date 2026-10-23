@@ -1,6 +1,9 @@
 /**
  * Expo `web.output: "single"` ignores app/+html.tsx.
  * Patch dist/index.html so cold loads are dark + PWA-ready (no white/black void).
+ *
+ * Critical: do NOT put align-items/justify-content:center on #root — that collapses
+ * the React Native Web tree to height 0 and leaves only the floating tab bar visible.
  */
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -38,16 +41,35 @@ const headInject = `
         overscroll-behavior: none;
         -webkit-tap-highlight-color: transparent;
         min-height: 100%;
+        min-height: 100dvh;
         min-height: -webkit-fill-available;
       }
       #root {
         display: flex;
+        flex-direction: column;
         flex: 1;
-        align-items: center;
-        justify-content: center;
+        height: 100%;
+        min-height: 100%;
+        min-height: 100dvh;
         min-height: -webkit-fill-available;
+        position: relative;
+      }
+      /* RN Web mounts a flex child — force it to fill the viewport */
+      #root > * {
+        flex: 1 1 auto;
+        width: 100%;
+        height: 100%;
+        min-height: 100%;
+        min-height: 100dvh;
+        align-self: stretch;
       }
       #lyra-boot-mark {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        z-index: 0;
+        pointer-events: none;
         font-family: system-ui, -apple-system, sans-serif;
         font-weight: 700;
         font-size: 28px;
@@ -65,10 +87,17 @@ const headInject = `
         border-radius: 1px;
         vertical-align: middle;
       }
+      #lyra-status-fill {
+        display: none !important;
+      }
     </style>
 `;
 
-if (!html.includes('id="lyra-boot"')) {
+const bootStyle = headInject.match(/<style id="lyra-boot">[\s\S]*?<\/style>/)?.[0];
+if (html.includes('id="lyra-boot"') && bootStyle) {
+  // Replace a stale boot stylesheet (older builds centered #root and broke layout)
+  html = html.replace(/<style id="lyra-boot">[\s\S]*?<\/style>/i, bootStyle);
+} else if (!html.includes('id="lyra-boot"')) {
   html = html.replace(/<\/head>/i, `${headInject}</head>`);
 }
 

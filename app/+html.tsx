@@ -52,13 +52,27 @@ body {
   overscroll-behavior: none;
   -webkit-tap-highlight-color: transparent;
   min-height: 100%;
+  min-height: 100dvh;
   min-height: -webkit-fill-available;
 }
 #root {
   display: flex;
+  flex-direction: column;
   flex: 1;
   height: 100%;
+  min-height: 100%;
+  min-height: 100dvh;
   min-height: -webkit-fill-available;
+  position: relative;
+}
+/* Never center #root children — that collapses RN Web to height:0 */
+#root > * {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+  min-height: 100dvh;
+  align-self: stretch;
 }
 /* Legacy overlay must never cover titles again */
 #lyra-status-fill {
