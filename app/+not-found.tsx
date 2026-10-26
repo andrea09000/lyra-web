@@ -14,7 +14,7 @@ export default function NotFoundScreen() {
         <Text style={[styles.kicker, { color: colors.green }]}>OFF GRID</Text>
         <Text style={[styles.title, { color: colors.ink }]}>Pagina assente</Text>
         <Link href="/(tabs)" style={styles.link}>
-          <Text style={[styles.linkText, { color: colors.green }]}>← TORNA A LYRA</Text>
+          <Text style={[styles.linkText, { color: colors.green }]}>← TORNA A VYBE</Text>
         </Link>
       </View>
     </>

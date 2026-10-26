@@ -30,6 +30,7 @@ import {
   saveTrackToDevice,
   warmLibraryAudio,
 } from '@/services/downloads';
+import { warmAllCovers } from '@/services/coverCache';
 import { getTracksByIds, prefetchAudioStream } from '@/services/youtube';
 import { Colors } from '@/constants/theme';
 
@@ -123,7 +124,7 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
         });
         setTrackIndex(index);
 
-        // Playlist + ascoltati (+ preferiti): scarica già in cache audio
+        // Ascoltati prima → poi preferiti → playlist (prossimo tap istantaneo)
         const toWarm: Track[] = [];
         const seen = new Set<string>();
         const push = (t: Track | undefined) => {
@@ -131,11 +132,16 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
           seen.add(t.id);
           toWarm.push(t);
         };
-        data.playlists.forEach((p) => (p.tracks ?? []).forEach(push));
         data.recent.forEach(push);
         data.favorites.forEach(push);
-        for (const t of toWarm.slice(0, 40)) prefetchAudioStream(t.id);
-        warmLibraryAudio(toWarm.slice(0, 40));
+        data.playlists.forEach((p) => (p.tracks ?? []).forEach(push));
+        for (const t of toWarm.slice(0, 50)) prefetchAudioStream(t.id);
+        warmLibraryAudio(toWarm.slice(0, 50));
+        warmAllCovers({
+          tracks: toWarm.slice(0, 60),
+          artists: data.tastes,
+          uris: data.playlists.map((p) => p.coverUri || p.tracks?.[0]?.thumbnail),
+        });
       } catch {
         // corrupt storage — boot empty
       } finally {
@@ -200,6 +206,7 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
 
   const setTastes = useCallback(async (artists: TasteArtist[]) => {
     setTastesState(artists);
+    warmAllCovers({ artists });
     await saveTastes(artists);
   }, []);
 
@@ -263,8 +270,9 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
         void saveRecent(next);
         return next;
       });
-      // Musica ascoltata → già in cache per il prossimo tap
+      // Ascoltata → scarica subito audio + cover in IndexedDB
       warmLibraryAudio([track]);
+      void saveTrackToDevice(track).catch(() => undefined);
     },
     [rememberTrack]
   );

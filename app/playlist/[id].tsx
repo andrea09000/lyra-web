@@ -203,7 +203,7 @@ export default function PlaylistScreen() {
               <CoverImage uri={cover} size="lg" style={styles.cover} />
             ) : (
               <View style={[styles.cover, { backgroundColor: playlist.coverColor }]}>
-                <Text style={styles.coverMark}>LYRA</Text>
+                <Text style={styles.coverMark}>VYBE</Text>
               </View>
             )}
             <View style={[styles.coverEdit, { backgroundColor: colors.green }]}>

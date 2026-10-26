@@ -9,6 +9,36 @@ const PIPED = [
   'https://pipedapi.kavin.rocks',
 ];
 
+/** Piped image proxies die — rewrite to durable YouTube CDN when possible. */
+function durableImage(raw) {
+  let image = String(raw || '');
+  if (image.startsWith('//')) image = `https:${image}`;
+  try {
+    const iu = new URL(image);
+    if (iu.hostname.includes('piped') || iu.hostname.endsWith('.private.coffee')) {
+      const hostHint = (iu.searchParams.get('host') || '').toLowerCase();
+      if (hostHint.includes('ggpht') || hostHint.includes('googleusercontent')) {
+        const q = new URLSearchParams(iu.search);
+        q.delete('host');
+        const qs = q.toString();
+        return `https://${hostHint}${iu.pathname}${qs ? `?${qs}` : ''}`;
+      }
+      if (iu.pathname.includes('/ytc/')) {
+        return `https://yt3.ggpht.com${iu.pathname.slice(iu.pathname.indexOf('/ytc/'))}`;
+      }
+      const vi = iu.pathname.match(/\/vi\/([^/]+)\//);
+      if (vi) return ytThumb(vi[1]);
+      // hashed avatar path still serves on ggpht
+      if (iu.pathname.length > 8) {
+        return `https://yt3.ggpht.com${iu.pathname}`;
+      }
+    }
+  } catch {
+    // keep
+  }
+  return image;
+}
+
 function videoIdFromUrl(url) {
   const m = String(url || '').match(/[?&]v=([\w-]{11})|\/watch\?v=([\w-]{11})|\/([\w-]{11})$/);
   return (m && (m[1] || m[2] || m[3])) || null;
@@ -144,8 +174,8 @@ async function searchChannels(query, limit = 3) {
         if (item.type !== 'channel' || !item.name) continue;
         const chId = String(item.url || '').replace(/^\/channel\//, '');
         if (!chId) continue;
-        let image = item.thumbnail || item.uploaderAvatar || '';
-        if (image.startsWith('//')) image = `https:${image}`;
+        const image = durableImage(item.thumbnail || item.uploaderAvatar || '');
+        if (!image) continue;
         out.push({
           id: `ch_${chId}`,
           name: String(item.name).replace(/\s*-\s*Topic\s*$/i, '').trim(),
@@ -171,8 +201,7 @@ async function searchChannels(query, limit = 3) {
     for (const ch of list) {
       if (!ch.authorId || !ch.author) continue;
       const thumbs = [...(ch.authorThumbnails || [])].sort((a, b) => b.width - a.width);
-      let image = thumbs[0]?.url || '';
-      if (image.startsWith('//')) image = `https:${image}`;
+      const image = durableImage(thumbs[0]?.url || '');
       if (!image) continue;
       out.push({
         id: `ch_${ch.authorId}`,

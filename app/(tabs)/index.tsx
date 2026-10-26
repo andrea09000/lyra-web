@@ -16,22 +16,26 @@ import { BrandMark } from '@/components/ui/BrandMark';
 import { CoverImage } from '@/components/ui/CoverImage';
 import { Radius, Spacing, Type } from '@/constants/theme';
 import { Track } from '@/types/music';
-import { getTrending, prefetchAudioStream, searchTracks } from '@/services/youtube';
-import { loadHomeFeed, saveHomeFeed } from '@/services/storage';
+import { warmAllCovers } from '@/services/coverCache';
+import { prefetchSearchResults, searchTracks } from '@/services/youtube';
+import { loadHomeFeed, loadProfile, saveHomeFeed } from '@/services/storage';
 import { useLibrary } from '@/context/LibraryContext';
 import { useTheme } from '@/context/ThemeContext';
 import { usePlayer } from '@/context/PlayerContext';
 import { useTopPad } from '@/hooks/useTopPad';
+import { ContentWidth } from '@/components/layout/ContentWidth';
+import { useTabBottomPad } from '@/hooks/useDesktop';
 
 export default function HomeScreen() {
   const topPad = useTopPad(8);
+  const bottomPad = useTabBottomPad(130);
   const router = useRouter();
   const { colors } = useTheme();
   const { ready, recent, tastes, playlists } = useLibrary();
   const { playTrack } = usePlayer();
+  const [firstName, setFirstName] = useState('');
 
   const [forYou, setForYou] = useState<Track[]>([]);
-  const [trending, setTrending] = useState<Track[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [feedError, setFeedError] = useState<string | null>(null);
@@ -45,7 +49,7 @@ export default function HomeScreen() {
     [tastes]
   );
 
-  const hero = forYou[0] ?? trending[0] ?? recent[0] ?? null;
+  const hero = forYou[0] ?? recent[0] ?? null;
   const playlistRail = useMemo(() => {
     if (playlists.length > 0) {
       return playlists.slice(0, 8).map((pl) => ({
@@ -74,7 +78,7 @@ export default function HomeScreen() {
     }
     const seen = new Set<string>();
     const out: { id: string; name: string; thumb?: string }[] = [];
-    for (const t of [...forYou, ...trending]) {
+    for (const t of [...forYou, ...recent]) {
       const key = t.artist?.toLowerCase();
       if (!key || seen.has(key)) continue;
       seen.add(key);
@@ -82,7 +86,7 @@ export default function HomeScreen() {
       if (out.length >= 8) break;
     }
     return out;
-  }, [tastes, forYou, trending]);
+  }, [tastes, forYou, recent]);
 
   const load = useCallback(
     async (force = false) => {
@@ -90,9 +94,8 @@ export default function HomeScreen() {
         setFeedError(null);
         if (!force) {
           const cached = await loadHomeFeed(tasteKey);
-          if (cached) {
+          if (cached?.forYou?.length) {
             setForYou(cached.forYou);
-            setTrending(cached.trending);
             return;
           }
         }
@@ -105,16 +108,15 @@ export default function HomeScreen() {
                 .join(' ')} mix playlist`
             : 'popular music mix 2024';
 
-        const [mix, trend] = await Promise.all([searchTracks(mixQuery, 14), getTrending(12)]);
+        const mix = await searchTracks(mixQuery, 14);
         setForYou(mix);
-        setTrending(trend);
-        if (!mix.length && !trend.length) {
+        if (!mix.length) {
           setFeedError('Nessun brano. Tira per aggiornare.');
         }
         void saveHomeFeed({
           tasteKey,
           forYou: mix,
-          trending: trend,
+          trending: [],
           savedAt: Date.now(),
         });
       } catch {
@@ -128,6 +130,10 @@ export default function HomeScreen() {
   );
 
   useEffect(() => {
+    void loadProfile().then((p) => setFirstName(p.firstName?.trim() || ''));
+  }, [ready]);
+
+  useEffect(() => {
     if (!ready) return;
     let cancelled = false;
     void (async () => {
@@ -135,9 +141,8 @@ export default function HomeScreen() {
         setFeedError(null);
         const cached = await loadHomeFeed(tasteKey);
         if (cancelled) return;
-        if (cached) {
+        if (cached?.forYou?.length) {
           setForYou(cached.forYou);
-          setTrending(cached.trending);
           setLoading(false);
           return;
         }
@@ -150,17 +155,16 @@ export default function HomeScreen() {
                 .join(' ')} mix playlist`
             : 'popular music mix 2024';
 
-        const [mix, trend] = await Promise.all([searchTracks(mixQuery, 14), getTrending(12)]);
+        const mix = await searchTracks(mixQuery, 14);
         if (cancelled) return;
         setForYou(mix);
-        setTrending(trend);
-        if (!mix.length && !trend.length) {
+        if (!mix.length) {
           setFeedError('Nessun brano. Tira per aggiornare.');
         }
         void saveHomeFeed({
           tasteKey,
           forYou: mix,
-          trending: trend,
+          trending: [],
           savedAt: Date.now(),
         });
       } catch {
@@ -179,22 +183,29 @@ export default function HomeScreen() {
   }, [ready, tasteKey]);
 
   useEffect(() => {
-    const hot = [...forYou.slice(0, 10), ...trending.slice(0, 6)];
+    const hot = [...forYou.slice(0, 10), ...recent.slice(0, 6)];
     const seen = new Set<string>();
+    const unique = hot.filter((track) => {
+      if (!track?.id || seen.has(track.id)) return false;
+      seen.add(track.id);
+      return true;
+    });
     const t = setTimeout(() => {
-      for (const track of hot) {
-        if (!track?.id || seen.has(track.id)) continue;
-        seen.add(track.id);
-        prefetchAudioStream(track.id);
-      }
-    }, 120);
+      prefetchSearchResults(unique, 14);
+      warmAllCovers({
+        tracks: unique,
+        artists,
+        uris: playlistRail.map((p) => p.thumb),
+      });
+    }, 80);
     return () => clearTimeout(t);
-  }, [forYou, trending]);
+  }, [forYou, recent, artists, playlistRail]);
 
   return (
     <View style={[styles.root, { backgroundColor: colors.background }]}>
+      <ContentWidth>
       <ScrollView
-        contentContainerStyle={{ paddingBottom: 130, paddingTop: topPad }}
+        contentContainerStyle={{ paddingBottom: bottomPad, paddingTop: topPad }}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
@@ -208,9 +219,9 @@ export default function HomeScreen() {
         }
       >
         <View style={styles.header}>
-          <BrandMark size="hero" />
-          <Text style={[styles.tagline, { color: colors.muted }]}>
-            Ascolta. Tieni il filo.
+          <BrandMark size="md" />
+          <Text style={[styles.welcome, { color: colors.ink }]}>
+            {firstName ? `Benvenuto, ${firstName}` : 'Benvenuto'}
           </Text>
 
           <Pressable
@@ -225,6 +236,89 @@ export default function HomeScreen() {
               Artista, brano, album…
             </Text>
           </Pressable>
+        </View>
+
+        {/* Per te — mix dai gusti / ascolti */}
+        <View style={styles.block}>
+          <View style={styles.sectionRow}>
+            <View style={styles.sectionText}>
+              <Text style={[styles.section, { color: colors.ink }]}>Per te</Text>
+              <Text style={[styles.sectionHint, { color: colors.muted }]}>
+                {tastes.length
+                  ? `Basato sui tuoi gusti`
+                  : recent.length
+                    ? 'Dai tuoi ascolti recenti'
+                    : 'Mix del momento'}
+              </Text>
+            </View>
+            {forYou.length > 0 ? (
+              <Pressable
+                onPress={() => playTrack(forYou[0], forYou)}
+                hitSlop={8}
+                accessibilityLabel="Riproduci Per te"
+              >
+                <Ionicons name="play-circle" size={28} color={colors.green} />
+              </Pressable>
+            ) : null}
+          </View>
+
+          {hero ? (
+            <Pressable
+              onPress={() => playTrack(hero, forYou.length ? forYou : recent)}
+              style={styles.feature}
+            >
+              <CoverImage
+                uri={hero.thumbnail}
+                recyclingKey={hero.id}
+                size="lg"
+                style={StyleSheet.absoluteFill}
+              />
+              <LinearGradient
+                colors={['transparent', 'rgba(10,10,10,0.85)']}
+                style={StyleSheet.absoluteFill}
+              />
+              <View style={styles.featureBody}>
+                <Text style={[styles.featureTitle, { color: colors.ink }]} numberOfLines={2}>
+                  {hero.title}
+                </Text>
+                <Text style={[styles.featureSub, { color: colors.muted }]} numberOfLines={1}>
+                  {hero.artist}
+                </Text>
+              </View>
+              <View style={[styles.featurePlay, { backgroundColor: colors.green }]}>
+                <Ionicons
+                  name="play"
+                  size={20}
+                  color={colors.onAccent}
+                  style={{ marginLeft: 2 }}
+                />
+              </View>
+            </Pressable>
+          ) : feedError ? (
+            <Pressable
+              onPress={() => {
+                setLoading(true);
+                void load(true);
+              }}
+              style={{ padding: Spacing.lg }}
+            >
+              <Text style={{ fontFamily: Type.uiMed, color: colors.muted }}>{feedError}</Text>
+            </Pressable>
+          ) : loading ? (
+            <ActivityIndicator color={colors.green} style={{ marginVertical: 24 }} />
+          ) : null}
+
+          {forYou.length > 1 ? (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={[styles.rail, { marginTop: 12 }]}
+            >
+              {forYou.slice(1, 12).map((track) => (
+                <PosterTile key={track.id} track={track} queue={forYou} width={140} />
+              ))}
+            </ScrollView>
+          ) : null}
         </View>
 
         <View style={styles.block}>
@@ -265,8 +359,10 @@ export default function HomeScreen() {
 
         <View style={styles.block}>
           <View style={styles.sectionRow}>
-            <Text style={[styles.section, { color: colors.ink }]}>Top artisti</Text>
-            <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+            <Text style={[styles.section, { color: colors.ink }]}>I tuoi artisti</Text>
+            <Pressable onPress={() => router.push('/tastes')} hitSlop={8}>
+              <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+            </Pressable>
           </View>
           <ScrollView
             horizontal
@@ -298,73 +394,24 @@ export default function HomeScreen() {
           </ScrollView>
         </View>
 
-        {hero ? (
+        {recent.length > 0 ? (
           <View style={styles.block}>
             <View style={styles.sectionRow}>
-              <Text style={[styles.section, { color: colors.ink }]}>Nuove uscite per te</Text>
-              <Ionicons name="chevron-forward" size={18} color={colors.muted} />
-            </View>
-            <Pressable
-              onPress={() => playTrack(hero, forYou.length ? forYou : trending)}
-              style={styles.feature}
-            >
-              <CoverImage
-                uri={hero.thumbnail}
-                recyclingKey={hero.id}
-                size="lg"
-                style={StyleSheet.absoluteFill}
-              />
-              <LinearGradient
-                colors={['transparent', 'rgba(10,10,10,0.85)']}
-                style={StyleSheet.absoluteFill}
-              />
-              <View style={styles.featureBody}>
-                <Text style={[styles.featureTitle, { color: colors.ink }]} numberOfLines={2}>
-                  {hero.title}
-                </Text>
-                <Text style={[styles.featureSub, { color: colors.muted }]} numberOfLines={1}>
-                  {hero.artist}
-                </Text>
-              </View>
-              <View style={[styles.featurePlay, { backgroundColor: colors.green }]}>
-                <Ionicons
-                  name="play"
-                  size={20}
-                  color={colors.onAccent}
-                  style={{ marginLeft: 2 }}
-                />
-              </View>
-            </Pressable>
-          </View>
-        ) : feedError ? (
-          <Pressable
-            onPress={() => {
-              setLoading(true);
-              void load(true);
-            }}
-            style={{ padding: Spacing.lg }}
-          >
-            <Text style={{ fontFamily: Type.uiMed, color: colors.muted }}>{feedError}</Text>
-          </Pressable>
-        ) : null}
-
-        {forYou.length > 1 ? (
-          <View style={styles.block}>
-            <View style={styles.sectionRow}>
-              <Text style={[styles.section, { color: colors.ink }]}>Consigliati</Text>
+              <Text style={[styles.section, { color: colors.ink }]}>Ultimi ascoltati</Text>
             </View>
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.rail}
             >
-              {forYou.slice(1, 10).map((track) => (
-                <PosterTile key={track.id} track={track} queue={forYou} width={140} />
+              {recent.slice(0, 12).map((track) => (
+                <PosterTile key={track.id} track={track} queue={recent} width={140} />
               ))}
             </ScrollView>
           </View>
         ) : null}
       </ScrollView>
+      </ContentWidth>
     </View>
   );
 }
@@ -373,15 +420,14 @@ const styles = StyleSheet.create({
   root: { flex: 1 },
   header: {
     paddingHorizontal: Spacing.lg,
-    gap: 12,
-    marginBottom: 28,
+    gap: 6,
+    marginBottom: 16,
   },
-  tagline: {
-    fontFamily: Type.uiMed,
-    fontSize: 15,
+  welcome: {
+    fontFamily: Type.uiSemi,
+    fontSize: 16,
     letterSpacing: -0.2,
-    marginTop: -2,
-    marginBottom: 6,
+    marginBottom: 2,
   },
   search: {
     flexDirection: 'row',
@@ -389,9 +435,9 @@ const styles = StyleSheet.create({
     gap: 10,
     borderRadius: Radius.full,
     borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 16,
-    paddingVertical: 13,
-    marginTop: 4,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    marginTop: 2,
   },
   searchPh: {
     fontFamily: Type.ui,
@@ -405,10 +451,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.lg,
     marginBottom: 12,
   },
+  sectionText: { flex: 1, gap: 2 },
   section: {
     fontFamily: Type.display,
     fontSize: 17,
     letterSpacing: -0.6,
+  },
+  sectionHint: {
+    fontFamily: Type.ui,
+    fontSize: 12,
   },
   rail: {
     paddingHorizontal: Spacing.lg,

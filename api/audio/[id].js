@@ -22,7 +22,7 @@ module.exports = async function handler(req, res) {
 
     res.setHeader('Content-Type', head.contentType || 'audio/mp4');
     res.setHeader('Accept-Ranges', 'bytes');
-    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.setHeader('Cache-Control', 'public, max-age=120, s-maxage=180, stale-while-revalidate=600');
     res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
 
     if (req.method === 'HEAD') {

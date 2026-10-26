@@ -1,0 +1,10 @@
+---
+description: Version bumps on prod deploy; boot splash; no Google login
+alwaysApply: true
+---
+
+# Vybe release & boot
+
+- **Version**: `constants/version.ts` is source of truth. On every `vercel --prod`, bump `APP_VERSION` + `APP_BUILD` and sync `package.json` / `app.json`. Patch for fixes, minor for features. Skip bump for pure local/dev iterations.
+- **Boot**: Never ship a blank white/black open. Keep `#vybe-boot` logo splash in `app/+html.tsx` and Gate logo in `app/index.tsx`.
+- **Auth**: No Google / cloud login. Library stays on-device. Do not re-add Continua con Google.

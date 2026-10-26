@@ -18,17 +18,17 @@ function readCssSafeTop(): number {
 }
 
 /**
- * Top padding for headers — safe-area only, plus a small breathing gap.
+ * Top padding for headers — safe-area + light breathing room.
  */
-export function useTopPad(extra = 8): number {
+export function useTopPad(extra = 10): number {
   const insets = useSafeAreaInsets();
   return useMemo(() => {
     if (Platform.OS !== 'web') {
       return insets.top + extra;
     }
     const measured = Math.max(insets.top, readCssSafeTop());
-    // Only invent a floor when APIs report nothing (rare)
-    const top = measured > 0 ? measured : 12;
+    // Floor only when APIs report nothing
+    const top = measured > 0 ? measured : 10;
     return top + extra;
   }, [insets.top, extra]);
 }

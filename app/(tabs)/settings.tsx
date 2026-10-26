@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   KeyboardAvoidingView,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -15,20 +16,23 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
-import Constants from 'expo-constants';
 import { Filament, Radius, Spacing, Type } from '@/constants/theme';
+import { MARKETING_ORIGIN } from '@/constants/site';
+import { APP_VERSION } from '@/constants/version';
 import { useLibrary } from '@/context/LibraryContext';
 import { useTheme } from '@/context/ThemeContext';
-import { showAlert } from '@/services/alert';
 import { loadProfile, saveProfile, type UserProfile } from '@/services/storage';
 import { useTopPad } from '@/hooks/useTopPad';
+import { ContentWidth } from '@/components/layout/ContentWidth';
+import { useTabBottomPad } from '@/hooks/useDesktop';
 
 export default function ProfileScreen() {
-  const topPad = useTopPad(10);
+  const topPad = useTopPad(8);
+  const bottomPad = useTabBottomPad(200);
   const router = useRouter();
   const { colors, isDark } = useTheme();
   const { tastes, favorites, playlists } = useLibrary();
-  const version = Constants.expoConfig?.version ?? '1.0.0';
+  const version = APP_VERSION;
 
   const [profile, setProfile] = useState<UserProfile>({
     firstName: '',
@@ -41,19 +45,19 @@ export default function ProfileScreen() {
 
   useEffect(() => {
     void loadProfile().then((p) => {
-      setProfile(p);
+      setProfile({ ...p, provider: 'none' });
       setReady(true);
     });
   }, []);
 
   const persist = useCallback((next: UserProfile) => {
     setProfile(next);
-    void saveProfile(next);
+    void saveProfile({ ...next, provider: 'none' });
   }, []);
 
   const patch = useCallback(
     (partial: Partial<UserProfile>) => {
-      persist({ ...profile, ...partial });
+      persist({ ...profile, ...partial, provider: 'none' });
     },
     [persist, profile]
   );
@@ -65,38 +69,7 @@ export default function ProfileScreen() {
     .slice(0, 2);
 
   const displayName =
-    [profile.firstName, profile.lastName].filter((s) => s.trim()).join(' ') || 'Ascoltatore Lyra';
-
-  const connected = profile.provider === 'google';
-
-  const signInGoogle = () => {
-    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    showAlert('Continua con Google', 'Collega l’account per tenere nome ed email sul profilo.', [
-      { text: 'Annulla', style: 'cancel' },
-      {
-        text: 'Continua',
-        onPress: () => {
-          persist({ ...profile, provider: 'google' });
-          void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-          setEditing(true);
-        },
-      },
-    ]);
-  };
-
-  const signOut = () => {
-    showAlert('Esci', 'Disconnettere l’account?', [
-      { text: 'Annulla', style: 'cancel' },
-      {
-        text: 'Esci',
-        style: 'destructive',
-        onPress: () => {
-          persist({ ...profile, provider: 'none' });
-          void Haptics.selectionAsync();
-        },
-      },
-    ]);
-  };
+    [profile.firstName, profile.lastName].filter((s) => s.trim()).join(' ') || 'Ascoltatore Vybe';
 
   const glassBg = isDark ? 'rgba(22,22,22,0.55)' : 'rgba(255,255,255,0.65)';
   const glassBorder = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)';
@@ -122,6 +95,7 @@ export default function ProfileScreen() {
         pointerEvents="none"
       />
 
+      <ContentWidth>
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -129,7 +103,7 @@ export default function ProfileScreen() {
         <ScrollView
           contentContainerStyle={{
             paddingTop: topPad,
-            paddingBottom: 200,
+            paddingBottom: bottomPad,
             paddingHorizontal: Spacing.lg,
           }}
           keyboardShouldPersistTaps="handled"
@@ -153,7 +127,7 @@ export default function ProfileScreen() {
               {ready ? displayName : '…'}
             </Text>
             <Text style={[styles.status, { color: colors.muted }]}>
-              {connected ? 'Account Google collegato' : 'Ascolti in locale · non collegato'}
+              Tutto in locale sul dispositivo
             </Text>
 
             <Pressable
@@ -262,42 +236,37 @@ export default function ProfileScreen() {
             />
           </Animated.View>
 
+          <Animated.View entering={FadeInDown.delay(180).duration(420)} style={styles.legalBlock}>
+            <Text style={[styles.legalHeading, { color: colors.muted }]}>Sito & legale</Text>
+            <Pressable
+              onPress={() => void Linking.openURL(MARKETING_ORIGIN)}
+              style={styles.legalLink}
+            >
+              <Text style={[styles.legalLinkText, { color: colors.ink }]}>Sito Vybe</Text>
+              <Ionicons name="open-outline" size={16} color={colors.muted} />
+            </Pressable>
+            <Pressable onPress={() => router.push('/privacy')} style={styles.legalLink}>
+              <Text style={[styles.legalLinkText, { color: colors.ink }]}>Privacy Policy</Text>
+              <Ionicons name="chevron-forward" size={16} color={colors.muted} />
+            </Pressable>
+            <Pressable onPress={() => router.push('/terms')} style={styles.legalLink}>
+              <Text style={[styles.legalLinkText, { color: colors.ink }]}>Termini e condizioni</Text>
+              <Ionicons name="chevron-forward" size={16} color={colors.muted} />
+            </Pressable>
+            <Pressable onPress={() => router.push('/cookies')} style={styles.legalLink}>
+              <Text style={[styles.legalLinkText, { color: colors.ink }]}>Cookie Policy</Text>
+              <Ionicons name="chevron-forward" size={16} color={colors.muted} />
+            </Pressable>
+          </Animated.View>
+
           <Animated.View entering={FadeInDown.delay(200).duration(420)} style={styles.authBlock}>
-            {!connected ? (
-              <Pressable
-                onPress={signInGoogle}
-                style={({ pressed }) => [
-                  styles.googleBtn,
-                  {
-                    backgroundColor: colors.green,
-                    opacity: pressed ? 0.88 : 1,
-                  },
-                ]}
-              >
-                <Ionicons name="logo-google" size={18} color="#FFFFFF" />
-                <Text style={styles.googleText}>Continua con Google</Text>
-              </Pressable>
-            ) : (
-              <Pressable
-                onPress={signOut}
-                style={({ pressed }) => [
-                  styles.signOutBtn,
-                  {
-                    borderColor: glassBorder,
-                    backgroundColor: glassBg,
-                    opacity: pressed ? 0.75 : 1,
-                  },
-                ]}
-              >
-                <Text style={[styles.signOutText, { color: colors.danger }]}>Disconnetti</Text>
-              </Pressable>
-            )}
             <Text style={[styles.version, { color: colors.muted }]}>
-              Lyra · v{version} · tema {isDark ? 'scuro' : 'chiaro'}
+              Vybe · v{version} · tema {isDark ? 'scuro' : 'chiaro'}
             </Text>
           </Animated.View>
         </ScrollView>
       </KeyboardAvoidingView>
+      </ContentWidth>
     </View>
   );
 }
@@ -541,36 +510,33 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 17,
   },
+  legalBlock: {
+    gap: 2,
+    marginTop: 8,
+  },
+  legalHeading: {
+    fontFamily: Type.uiMed,
+    fontSize: 12,
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+    marginBottom: 6,
+    paddingHorizontal: 4,
+  },
+  legalLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    paddingHorizontal: 4,
+  },
+  legalLinkText: {
+    fontFamily: Type.uiSemi,
+    fontSize: 15,
+  },
   authBlock: {
     gap: 16,
     alignItems: 'center',
-  },
-  googleBtn: {
-    alignSelf: 'stretch',
-    height: 54,
-    borderRadius: Radius.full,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-  },
-  googleText: {
-    fontFamily: Type.uiSemi,
-    fontSize: 16,
-    color: '#FFFFFF',
-  },
-  signOutBtn: {
-    alignSelf: 'stretch',
-    height: 48,
-    borderRadius: Radius.full,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    overflow: 'hidden',
-  },
-  signOutText: {
-    fontFamily: Type.uiSemi,
-    fontSize: 15,
+    paddingTop: 8,
   },
   version: {
     fontFamily: Type.ui,

@@ -14,6 +14,7 @@ import { TASTE_ARTISTS } from '@/constants/artists';
 import { Radius, Spacing } from '@/constants/theme';
 import { ArtistChip } from '@/components/music/ArtistChip';
 import { TasteArtist } from '@/types/music';
+import { prefetchArtistCovers } from '@/services/coverCache';
 import { hydrateArtistCovers, searchArtists } from '@/services/youtube';
 import { useTheme } from '@/context/ThemeContext';
 
@@ -47,11 +48,16 @@ export function ArtistPicker({
   useEffect(() => {
     let cancelled = false;
     setHydrating(true);
+    prefetchArtistCovers(TASTE_ARTISTS, 'md');
     void hydrateArtistCovers(TASTE_ARTISTS, (list) => {
-      if (!cancelled) setCatalog(list);
+      if (!cancelled) {
+        setCatalog(list);
+        prefetchArtistCovers(list, 'md');
+      }
     }).then((list) => {
       if (!cancelled) {
         setCatalog(list);
+        prefetchArtistCovers(list, 'md');
         setHydrating(false);
       }
     });
@@ -73,9 +79,10 @@ export function ArtistPicker({
     const seq = ++seqRef.current;
     timer.current = setTimeout(async () => {
       try {
-        const found = await searchArtists(q, 1);
+        const found = await searchArtists(q, 8);
         if (seq !== seqRef.current) return;
         setResults(found);
+        prefetchArtistCovers(found, 'md');
       } catch {
         if (seq !== seqRef.current) return;
         setResults([]);

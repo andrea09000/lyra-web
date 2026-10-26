@@ -1,5 +1,13 @@
 import { useMemo, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -11,6 +19,7 @@ import { ArtistPicker } from '@/components/music/ArtistPicker';
 import { useLibrary } from '@/context/LibraryContext';
 import { useTheme } from '@/context/ThemeContext';
 import { TasteArtist } from '@/types/music';
+import { loadProfile, saveProfile } from '@/services/storage';
 
 export default function OnboardingScreen() {
   const insets = useSafeAreaInsets();
@@ -18,10 +27,12 @@ export default function OnboardingScreen() {
   const { colors } = useTheme();
   const { completeOnboarding } = useLibrary();
   const [step, setStep] = useState<0 | 1>(0);
+  const [name, setName] = useState('');
   const [picked, setPicked] = useState<Record<string, TasteArtist>>({});
 
   const selected = useMemo(() => Object.values(picked), [picked]);
   const canContinue = selected.length === MAX_TASTE_PICKS;
+  const canStart = name.trim().length >= 2;
 
   const toggle = (artist: TasteArtist) => {
     setPicked((prev) => {
@@ -39,62 +50,119 @@ export default function OnboardingScreen() {
     });
   };
 
+  const persistName = async () => {
+    const firstName = name.trim();
+    const prev = await loadProfile();
+    await saveProfile({ ...prev, firstName, provider: 'none' });
+  };
+
+  const goArtists = async () => {
+    if (!canStart) {
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      return;
+    }
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    await persistName();
+    setStep(1);
+  };
+
   const finish = async () => {
     if (!canContinue) {
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
       return;
     }
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    await persistName();
     await completeOnboarding(selected);
     router.replace('/(tabs)');
   };
 
   if (step === 0) {
     return (
-      <View
-        style={[
-          styles.root,
-          {
-            backgroundColor: colors.background,
-            paddingTop: insets.top + 36,
-            paddingBottom: insets.bottom + 28,
-          },
-        ]}
+      <KeyboardAvoidingView
+        style={{ flex: 1, backgroundColor: colors.background }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <BrandMark size="lg" />
-        <View style={styles.mid}>
-          <Text style={[styles.hero, { color: colors.ink }]}>
-            La tua musica,{'\n'}sotto tensione.
-          </Text>
-          <Text style={[styles.sub, { color: colors.muted }]}>
-            Tocca un brano e parte. Playlist e gusti restano sul dispositivo.
-          </Text>
-        </View>
-        <Pressable
-          style={({ pressed }) => [
-            styles.cta,
-            { backgroundColor: colors.green, opacity: pressed ? 0.9 : 1 },
+        <View
+          style={[
+            styles.root,
+            {
+              backgroundColor: colors.background,
+              paddingTop: insets.top + 12,
+              paddingBottom: insets.bottom + 20,
+            },
           ]}
-          onPress={() => {
-            void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-            setStep(1);
-          }}
         >
-          <Text style={[styles.ctaText, { color: colors.onAccent }]}>Inizia</Text>
-          <Ionicons name="arrow-forward" size={18} color={colors.onAccent} />
-        </Pressable>
-      </View>
+          <BrandMark size="md" />
+          <View style={styles.mid}>
+            <Text style={[styles.welcome, { color: colors.ink }]}>Benvenuto</Text>
+            <Text style={[styles.sub, { color: colors.muted }]}>
+              Come ti chiami? Lo usiamo solo sul dispositivo.
+            </Text>
+            <TextInput
+              value={name}
+              onChangeText={setName}
+              placeholder="Il tuo nome"
+              placeholderTextColor={colors.muted}
+              autoCapitalize="words"
+              autoCorrect={false}
+              returnKeyType="done"
+              onSubmitEditing={() => void goArtists()}
+              style={[
+                styles.input,
+                {
+                  color: colors.ink,
+                  borderColor: colors.line,
+                  backgroundColor: colors.elev2,
+                },
+              ]}
+            />
+          </View>
+          <Pressable
+            style={({ pressed }) => [
+              styles.cta,
+              {
+                backgroundColor: canStart ? colors.green : colors.fog,
+                opacity: pressed && canStart ? 0.9 : 1,
+              },
+            ]}
+            onPress={() => void goArtists()}
+            disabled={!canStart}
+          >
+            <Text
+              style={[
+                styles.ctaText,
+                { color: canStart ? colors.onAccent : colors.muted },
+              ]}
+            >
+              Continua
+            </Text>
+            <Ionicons
+              name="arrow-forward"
+              size={18}
+              color={canStart ? colors.onAccent : colors.muted}
+            />
+          </Pressable>
+        </View>
+      </KeyboardAvoidingView>
     );
   }
 
   return (
-    <View style={[styles.rootFlat, { backgroundColor: colors.background, paddingTop: insets.top + 10 }]}>
+    <View
+      style={[
+        styles.rootFlat,
+        { backgroundColor: colors.background, paddingTop: insets.top + 6 },
+      ]}
+    >
       <ArtistPicker
         picked={picked}
         onToggle={toggle}
         header={
           <View style={styles.pickerHeader}>
-            <Text style={[styles.pickerTitle, { color: colors.ink }]}>Chi ascolti?</Text>
+            <Text style={[styles.pickerTitle, { color: colors.ink }]}>
+              Ciao{name.trim() ? `, ${name.trim()}` : ''}
+            </Text>
             <Text style={[styles.pickerSub, { color: colors.muted }]}>
               Scegli {MAX_TASTE_PICKS} artisti.
             </Text>
@@ -125,7 +193,7 @@ export default function OnboardingScreen() {
               { color: canContinue ? colors.onAccent : colors.muted },
             ]}
           >
-            {canContinue ? 'Entra in Lyra' : `Ancora ${MAX_TASTE_PICKS - selected.length}`}
+            {canContinue ? 'Entra in Vybe' : `Ancora ${MAX_TASTE_PICKS - selected.length}`}
           </Text>
         </Pressable>
       </View>
@@ -140,27 +208,37 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   rootFlat: { flex: 1 },
-  mid: { gap: 14 },
-  hero: {
+  mid: { gap: 10, marginTop: 8 },
+  welcome: {
     fontFamily: Type.display,
-    fontSize: 34,
-    lineHeight: 40,
+    fontSize: 32,
+    lineHeight: 38,
     letterSpacing: -0.8,
   },
   sub: {
     fontFamily: Type.ui,
-    fontSize: 15,
-    lineHeight: 22,
+    fontSize: 14,
+    lineHeight: 20,
     maxWidth: 320,
+    marginBottom: 4,
+  },
+  input: {
+    marginTop: 8,
+    borderWidth: 1,
+    borderRadius: Radius.md,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontFamily: Type.uiMed,
+    fontSize: 17,
   },
   pickerHeader: {
     paddingHorizontal: Spacing.lg,
-    paddingBottom: Spacing.md,
-    gap: 6,
+    paddingBottom: Spacing.sm,
+    gap: 4,
   },
   pickerTitle: {
     fontFamily: Type.display,
-    fontSize: 28,
+    fontSize: 24,
     letterSpacing: -0.5,
   },
   pickerSub: {
@@ -171,7 +249,7 @@ const styles = StyleSheet.create({
   counter: {
     fontFamily: Type.uiBold,
     fontSize: 13,
-    marginTop: 4,
+    marginTop: 2,
   },
   footer: {
     position: 'absolute',

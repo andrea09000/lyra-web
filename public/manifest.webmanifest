@@ -1,6 +1,7 @@
 {
-  "name": "Lyra",
-  "short_name": "Lyra",
+  "name": "Vybe",
+  "short_name": "Vybe",
+  "description": "Musica a tutto schermo · v1.4.10",
   "icons": [
     {
       "src": "/icon-192.png",

@@ -1,31 +1,31 @@
 {
   "expo": {
-    "name": "Lyra Web",
-    "slug": "lyra-web",
-    "version": "1.0.0",
+    "name": "Vybe",
+    "slug": "vybe",
+    "version": "1.4.10",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "lyraweb",
+    "scheme": "vybe",
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.lyra.music.web"
+      "bundleIdentifier": "com.vybe.music.web"
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#12140F",
+        "backgroundColor": "#070B18",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "package": "com.lyra.music.web"
+      "package": "com.vybe.music.web"
     },
     "web": {
       "bundler": "metro",
       "output": "single",
       "favicon": "./assets/images/favicon.png",
-      "name": "Lyra",
-      "shortName": "Lyra",
+      "name": "Vybe",
+      "shortName": "Vybe",
       "description": "Musica a tutto schermo",
       "themeColor": "#070806",
       "backgroundColor": "#070806",
@@ -49,7 +49,7 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Lyra usa le tue foto per copertine e sfondi delle playlist."
+          "photosPermission": "Vybe usa le tue foto per copertine e sfondi delle playlist."
         }
       ]
     ],

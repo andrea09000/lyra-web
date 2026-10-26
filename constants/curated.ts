@@ -70,7 +70,7 @@ export const ONBOARDING_SLIDES = [
   {
     id: '1',
     title: 'La tua musica,\nsotto tensione',
-    body: 'Lyra porta brani da YouTube in un’app tesa e locale: tap e parte.',
+    body: 'Vybe porta brani da YouTube in un’app tesa e locale: tap e parte.',
   },
   {
     id: '2',

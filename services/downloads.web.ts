@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Track } from '@/types/music';
+import { prefetchTrackCovers } from '@/services/coverCache';
 import { scrapeAudioCandidates } from '@/services/ytScrape.web';
 
 const META_KEY = '@lyra/downloads-web';
@@ -7,7 +8,7 @@ const DB_NAME = 'lyra-audio';
 const STORE = 'blobs';
 const CACHE_NAME = 'lyra-audio-blobs-v1';
 /** Cap so auto-cache does not fill the phone. Oldest (LRU) removed first. */
-const MAX_DOWNLOADS = 60;
+const MAX_DOWNLOADS = 80;
 const MIN_BYTES = 10_000;
 const CONCURRENCY = 4;
 
@@ -194,24 +195,19 @@ async function fetchPlayableBlob(videoId: string): Promise<Blob> {
     const n = Number(b || 0);
     return n > 0 && n < 2000 ? n * 1000 : n;
   };
-  const ranked = candidates
-    .filter((c) => c.source !== 'proxy:audio' && !c.url.includes('/api/audio/'))
-    .sort((a, b) => {
-      const br = norm(b.bitrate) - norm(a.bitrate);
-      if (br !== 0) return br;
-      const aCors =
-        a.source.includes('inv-proxy') || a.source.includes('piped') || a.source.startsWith('fallback:')
-          ? 1
-          : 0;
-      const bCors =
-        b.source.includes('inv-proxy') || b.source.includes('piped') || b.source.startsWith('fallback:')
-          ? 1
-          : 0;
-      return bCors - aCors;
-    });
+  // Inv videoplayback often lacks CORS for fetch() (media <audio> is fine).
+  // Prefer same-origin /api/audio for offline download blobs.
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const proxy = origin ? `${origin}/api/audio/${encodeURIComponent(videoId)}` : null;
+  const ranked = [
+    ...(proxy ? [{ url: proxy, source: 'proxy:audio', mime: 'audio/mp4' as string | undefined }] : []),
+    ...candidates
+      .filter((c) => !c.url.includes('googlevideo.com') && !c.url.includes('/videoplayback'))
+      .sort((a, b) => norm(b.bitrate) - norm(a.bitrate)),
+  ];
 
   let lastError: unknown;
-  for (const c of ranked.slice(0, 8)) {
+  for (const c of ranked.slice(0, 4)) {
     try {
       const res = await fetch(c.url, {
         mode: 'cors',
@@ -289,6 +285,7 @@ export function cacheTrackAudio(videoId: string): void {
 
 /** Permanent cache entry (playlist / listened / manual save). */
 export async function saveTrackToDevice(track: Track): Promise<DownloadedTrack> {
+  prefetchTrackCovers([track], 'lg');
   const uri = await downloadTo(track.id);
   const prev = await readMeta();
   const entry: DownloadedTrack = {
@@ -363,13 +360,20 @@ function releaseWarmSlot() {
 }
 
 /**
- * Background-queue playlist + recent (+ favorites) so the next tap is instant.
- * Dedupes, rate-limits, never blocks UI.
+ * Background-queue ascoltati / preferiti / playlist → IndexedDB audio.
+ * Dedupes, rate-limits, never blocks UI. Already-cached tracks still refresh meta.
  */
 export function warmLibraryAudio(tracks: Track[]): void {
+  prefetchTrackCovers(tracks, 'md');
   if (typeof indexedDB === 'undefined') return;
   for (const track of tracks) {
-    if (!track?.id || warmQueued.has(track.id) || peekLocalAudioUri(track.id)) continue;
+    if (!track?.id || warmQueued.has(track.id)) continue;
+    // Already in memory this session — still ensure meta entry exists
+    if (peekLocalAudioUri(track.id)) {
+      warmQueued.add(track.id);
+      void saveTrackToDevice(track).catch(() => undefined);
+      continue;
+    }
     warmQueued.add(track.id);
     void (async () => {
       await acquireWarmSlot();

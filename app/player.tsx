@@ -14,6 +14,7 @@ import { useLibrary } from '@/context/LibraryContext';
 import { useTheme } from '@/context/ThemeContext';
 import { useAddToPlaylist } from '@/hooks/useAddToPlaylist';
 import { formatDuration } from '@/services/youtube';
+import { useDesktop } from '@/hooks/useDesktop';
 
 export default function PlayerScreen() {
   const insets = useSafeAreaInsets();
@@ -38,6 +39,7 @@ export default function PlayerScreen() {
   const { isFavorite, toggleFav } = useLibrary();
   const { addTrackToPlaylist } = useAddToPlaylist();
   const [scrub, setScrub] = useState<number | null>(null);
+  const desktop = useDesktop();
 
   if (!current) {
     return (
@@ -67,6 +69,7 @@ export default function PlayerScreen() {
       <View
         style={[
           styles.inner,
+          desktop && styles.innerDesktop,
           { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 12 },
         ]}
       >
@@ -82,120 +85,135 @@ export default function PlayerScreen() {
           </Pressable>
         </View>
 
-        <View style={styles.stage}>
-          <CoverImage
-            uri={current.thumbnail}
-            recyclingKey={current.id}
-            size="lg"
-            style={styles.art}
-          />
-        </View>
-
-        <View style={styles.meta}>
-          <Text style={[styles.title, { color: colors.ink }]} numberOfLines={2}>
-            {current.title}
-          </Text>
-          <View style={styles.artistRow}>
-            <Text style={[styles.artist, { color: colors.muted }]} numberOfLines={1}>
-              {current.artist}
-            </Text>
-            <Ionicons name="checkmark-circle" size={16} color={colors.green} />
-          </View>
-          {error ? <Text style={[styles.error, { color: colors.danger }]}>{error}</Text> : null}
-        </View>
-
-        <View style={styles.seekBlock}>
-          <SeekBar
-            position={shown}
-            duration={total}
-            onScrub={setScrub}
-            onSeek={(seconds) => {
-              setScrub(null);
-              void Haptics.selectionAsync();
-              seekTo(seconds);
-            }}
-          />
-          <View style={styles.times}>
-            <Text style={[styles.time, { color: colors.muted }]}>
-              {formatDuration(Math.floor(shown))}
-            </Text>
-            <Text style={[styles.time, { color: colors.muted }]}>
-              -{formatDuration(Math.max(0, Math.floor(total - shown)))}
-            </Text>
-          </View>
-        </View>
-
-        <View style={styles.utilRow}>
-          <Pressable
-            hitSlop={10}
-            onPress={() => {
-              void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              void toggleFav(current);
-            }}
-          >
-            <Ionicons
-              name={fav ? 'heart' : 'heart-outline'}
-              size={22}
-              color={fav ? colors.green : colors.ink}
+        <View style={[styles.body, desktop && styles.bodyDesktop]}>
+          <View style={[styles.stage, desktop && styles.stageDesktop]}>
+            <CoverImage
+              uri={current.thumbnail}
+              recyclingKey={current.id}
+              size="lg"
+              style={[styles.art, desktop && styles.artDesktop]}
             />
-          </Pressable>
-        </View>
-
-        <View style={[styles.tray, { backgroundColor: 'rgba(22,22,22,0.75)' }]}>
-          <BlurView intensity={40} tint="dark" style={StyleSheet.absoluteFill} />
-          <View style={styles.transport}>
-            <Pressable
-              onPress={() => {
-                void Haptics.selectionAsync();
-                toggleShuffle();
-              }}
-            >
-              <Ionicons name="shuffle" size={20} color={shuffle ? colors.green : colors.muted} />
-            </Pressable>
-            <Pressable
-              onPress={() => {
-                void Haptics.selectionAsync();
-                playPrev();
-              }}
-            >
-              <Ionicons name="play-skip-back" size={28} color={colors.ink} />
-            </Pressable>
-            <Pressable
-              onPress={() => {
-                void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                togglePlay();
-              }}
-              style={[styles.play, { backgroundColor: colors.green }]}
-            >
-              <Ionicons
-                name={playing || loading ? 'pause' : 'play'}
-                size={30}
-                color={colors.onAccent}
-                style={{ marginLeft: playing || loading ? 0 : 3 }}
-              />
-            </Pressable>
-            <Pressable
-              onPress={() => {
-                void Haptics.selectionAsync();
-                playNext();
-              }}
-            >
-              <Ionicons name="play-skip-forward" size={28} color={colors.ink} />
-            </Pressable>
-            <Pressable
-              onPress={() => {
-                void Haptics.selectionAsync();
-                toggleRepeat();
-              }}
-            >
-              <Ionicons name="repeat" size={20} color={repeat ? colors.green : colors.muted} />
-            </Pressable>
           </View>
-        </View>
 
-        <View style={[styles.lyrics, { backgroundColor: colors.fog }]}>
-          <View style={[styles.lyricsHandle, { backgroundColor: colors.line }]} />
-          <Text style={[styles.lyricsText, { color: colors.muted }]}>Testi disponibili</Text>
+          <View style={[styles.controlsCol, desktop && styles.controlsColDesktop]}>
+            <View style={styles.meta}>
+              <Text
+                style={[styles.title, desktop && styles.titleDesktop, { color: colors.ink }]}
+                numberOfLines={2}
+              >
+                {current.title}
+              </Text>
+              <View style={styles.artistRow}>
+                <Text style={[styles.artist, { color: colors.muted }]} numberOfLines={1}>
+                  {current.artist}
+                </Text>
+                <Ionicons name="checkmark-circle" size={16} color={colors.green} />
+              </View>
+              {error ? (
+                <Text style={[styles.error, { color: colors.danger }]}>{error}</Text>
+              ) : null}
+            </View>
+
+            <View style={styles.seekBlock}>
+              <SeekBar
+                position={shown}
+                duration={total}
+                onScrub={setScrub}
+                onSeek={(seconds) => {
+                  setScrub(null);
+                  void Haptics.selectionAsync();
+                  seekTo(seconds);
+                }}
+              />
+              <View style={styles.times}>
+                <Text style={[styles.time, { color: colors.muted }]}>
+                  {formatDuration(Math.floor(shown))}
+                </Text>
+                <Text style={[styles.time, { color: colors.muted }]}>
+                  -{formatDuration(Math.max(0, Math.floor(total - shown)))}
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.utilRow}>
+              <Pressable
+                hitSlop={10}
+                onPress={() => {
+                  void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  void toggleFav(current);
+                }}
+              >
+                <Ionicons
+                  name={fav ? 'heart' : 'heart-outline'}
+                  size={22}
+                  color={fav ? colors.green : colors.ink}
+                />
+              </Pressable>
+            </View>
+
+            <View style={[styles.tray, { backgroundColor: 'rgba(22,22,22,0.75)' }]}>
+              <BlurView intensity={40} tint="dark" style={StyleSheet.absoluteFill} />
+              <View style={styles.transport}>
+                <Pressable
+                  onPress={() => {
+                    void Haptics.selectionAsync();
+                    toggleShuffle();
+                  }}
+                >
+                  <Ionicons
+                    name="shuffle"
+                    size={20}
+                    color={shuffle ? colors.green : colors.muted}
+                  />
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    void Haptics.selectionAsync();
+                    playPrev();
+                  }}
+                >
+                  <Ionicons name="play-skip-back" size={28} color={colors.ink} />
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                    togglePlay();
+                  }}
+                  style={[styles.play, { backgroundColor: colors.green }]}
+                >
+                  <Ionicons
+                    name={playing || loading ? 'pause' : 'play'}
+                    size={30}
+                    color={colors.onAccent}
+                    style={{ marginLeft: playing || loading ? 0 : 3 }}
+                  />
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    void Haptics.selectionAsync();
+                    playNext();
+                  }}
+                >
+                  <Ionicons name="play-skip-forward" size={28} color={colors.ink} />
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    void Haptics.selectionAsync();
+                    toggleRepeat();
+                  }}
+                >
+                  <Ionicons name="repeat" size={20} color={repeat ? colors.green : colors.muted} />
+                </Pressable>
+              </View>
+            </View>
+
+            {!desktop ? (
+              <View style={[styles.lyrics, { backgroundColor: colors.fog }]}>
+                <View style={[styles.lyricsHandle, { backgroundColor: colors.line }]} />
+                <Text style={[styles.lyricsText, { color: colors.muted }]}>Testi disponibili</Text>
+              </View>
+            ) : null}
+          </View>
         </View>
       </View>
     </View>
@@ -209,6 +227,11 @@ const styles = StyleSheet.create({
   link: { fontFamily: Type.uiSemi, fontSize: 15 },
   bg: { ...StyleSheet.absoluteFill, opacity: 0.75 },
   inner: { flex: 1, paddingHorizontal: Spacing.lg },
+  innerDesktop: {
+    maxWidth: 1080,
+    width: '100%',
+    alignSelf: 'center',
+  },
   topBar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -221,11 +244,22 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     paddingHorizontal: 12,
   },
+  body: { flex: 1 },
+  bodyDesktop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 48,
+    paddingHorizontal: 24,
+  },
   stage: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 12,
+  },
+  stageDesktop: {
+    flex: 1.1,
+    paddingVertical: 24,
   },
   art: {
     width: '100%',
@@ -233,11 +267,24 @@ const styles = StyleSheet.create({
     aspectRatio: 1,
     borderRadius: Radius.xl,
   },
+  artDesktop: {
+    maxWidth: 420,
+  },
+  controlsCol: {},
+  controlsColDesktop: {
+    flex: 1,
+    maxWidth: 440,
+    justifyContent: 'center',
+  },
   meta: { gap: 6, marginBottom: 8 },
   title: {
     fontFamily: Type.display,
     fontSize: 24,
     letterSpacing: -0.4,
+  },
+  titleDesktop: {
+    fontSize: 32,
+    letterSpacing: -0.8,
   },
   artistRow: {
     flexDirection: 'row',

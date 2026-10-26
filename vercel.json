@@ -1,11 +1,15 @@
 {
-  "buildCommand": "npx expo export -p web",
+  "buildCommand": "node scripts/sync-add-to-homescreen.mjs && npx expo export -p web && node scripts/inject-boot-splash.mjs",
   "outputDirectory": "dist",
   "framework": null,
   "installCommand": "npm install",
   "functions": {
     "api/audio/[id].js": {
       "maxDuration": 30,
+      "memory": 1024
+    },
+    "api/go/[id].js": {
+      "maxDuration": 20,
       "memory": 1024
     },
     "api/s/[id].js": {
@@ -16,9 +20,17 @@
       "maxDuration": 25,
       "memory": 1024
     },
+    "api/inv/[id].js": {
+      "maxDuration": 20,
+      "memory": 512
+    },
     "api/search.js": {
       "maxDuration": 25,
       "memory": 1024
+    },
+    "api/suggestions.js": {
+      "maxDuration": 10,
+      "memory": 512
     },
     "api/artists.js": {
       "maxDuration": 20

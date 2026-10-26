@@ -18,9 +18,12 @@ import { useLibrary } from '@/context/LibraryContext';
 import { useTheme } from '@/context/ThemeContext';
 import { showAlert } from '@/services/alert';
 import { useTopPad } from '@/hooks/useTopPad';
+import { ContentWidth } from '@/components/layout/ContentWidth';
+import { useTabBottomPad } from '@/hooks/useDesktop';
 
 export default function LibraryScreen() {
-  const topPad = useTopPad(6);
+  const topPad = useTopPad(8);
+  const bottomPad = useTabBottomPad(190);
   const router = useRouter();
   const { colors } = useTheme();
   const { playlists, recent, createPlaylist, deletePlaylist } = useLibrary();
@@ -38,6 +41,7 @@ export default function LibraryScreen() {
 
   return (
     <View style={[styles.root, { paddingTop: topPad, backgroundColor: colors.background }]}>
+      <ContentWidth>
       <View style={styles.topRow}>
         <Text style={[styles.heading, { color: colors.ink }]}>Libreria</Text>
         <View style={styles.topActions}>
@@ -85,7 +89,7 @@ export default function LibraryScreen() {
       <FlatList
         data={[{ type: 'header' as const }]}
         keyExtractor={() => 'lib'}
-        contentContainerStyle={{ paddingBottom: 190 }}
+        contentContainerStyle={{ paddingBottom: bottomPad }}
         renderItem={() => (
           <View>
             <View style={styles.pad}>
@@ -158,6 +162,7 @@ export default function LibraryScreen() {
           </View>
         )}
       />
+      </ContentWidth>
     </View>
   );
 }

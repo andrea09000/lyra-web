@@ -3,7 +3,8 @@ import { Playlist, TasteArtist, Track } from '@/types/music';
 export const LYRA_BACKUP_VERSION = 1;
 
 export type LyraBackup = {
-  app: 'lyra';
+  /** `lyra` kept for older exports */
+  app: 'vybe' | 'lyra';
   version: number;
   exportedAt: number;
   favorites: Track[];
@@ -80,7 +81,7 @@ function normalizeTaste(raw: unknown): TasteArtist | null {
   };
 }
 
-/** Build a portable Lyra backup object. */
+/** Build a portable Vybe backup object (accepts legacy Lyra imports). */
 export function buildLyraBackup(input: {
   favorites: Track[];
   playlists: Playlist[];
@@ -88,7 +89,7 @@ export function buildLyraBackup(input: {
   recent?: Track[];
 }): LyraBackup {
   return {
-    app: 'lyra',
+    app: 'vybe',
     version: LYRA_BACKUP_VERSION,
     exportedAt: Date.now(),
     favorites: input.favorites,
@@ -103,7 +104,7 @@ export function parseLyraBackup(raw: string | unknown): LyraBackup {
   if (!data || typeof data !== 'object') throw new Error('File non valido');
 
   const obj = data as Record<string, unknown>;
-  // Accept both Lyra backups and loose { favorites, playlists }
+  // Accept Vybe / legacy Lyra backups and loose { favorites, playlists }
   const favorites = (Array.isArray(obj.favorites) ? obj.favorites : [])
     .map(normalizeTrack)
     .filter((t): t is Track => Boolean(t));
@@ -122,7 +123,7 @@ export function parseLyraBackup(raw: string | unknown): LyraBackup {
   }
 
   return {
-    app: 'lyra',
+    app: obj.app === 'lyra' ? 'lyra' : 'vybe',
     version: Number(obj.version) || LYRA_BACKUP_VERSION,
     exportedAt: Number(obj.exportedAt) || Date.now(),
     favorites,

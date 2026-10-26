@@ -17,10 +17,14 @@ import {
 } from '@expo-google-fonts/unbounded';
 import 'react-native-reanimated';
 
+import { CookieBanner } from '@/components/legal/CookieBanner';
 import { InstallBanner } from '@/components/pwa/InstallBanner';
+import { InstallGate } from '@/components/pwa/InstallGate';
+import { MarketingGate } from '@/components/pwa/MarketingGate';
 import { LibraryProvider } from '@/context/LibraryContext';
 import { PlayerProvider } from '@/context/PlayerContext';
 import { ThemeProvider, useTheme } from '@/context/ThemeContext';
+import { hideBootSplash } from '@/services/bootSplash';
 import { applyPwaMeta } from '@/services/pwaMeta';
 
 export { ErrorBoundary } from 'expo-router';
@@ -99,6 +103,7 @@ function RootNav() {
           }}
         >
           <Stack.Screen name="index" />
+          <Stack.Screen name="welcome" options={{ animation: 'fade' }} />
           <Stack.Screen name="onboarding" />
           <Stack.Screen name="(tabs)" />
           <Stack.Screen
@@ -112,8 +117,14 @@ function RootNav() {
           <Stack.Screen name="playlist/[id]" options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="tastes" options={{ animation: 'slide_from_bottom' }} />
           <Stack.Screen name="import" options={{ animation: 'slide_from_bottom' }} />
+          <Stack.Screen name="privacy" options={{ animation: 'slide_from_right' }} />
+          <Stack.Screen name="terms" options={{ animation: 'slide_from_right' }} />
+          <Stack.Screen name="cookies" options={{ animation: 'slide_from_right' }} />
         </Stack>
+        <MarketingGate />
+        <InstallGate />
         <InstallBanner />
+        <CookieBanner />
       </View>
     </>
   );
@@ -132,11 +143,14 @@ export default function RootLayout() {
 
   useEffect(() => {
     // Never block the whole app on fonts — that was a permanent black screen on slow PWA.
-    SplashScreen.hideAsync();
+    void SplashScreen.hideAsync();
+    // Fallback if Gate never marks ready; bootSplash.web enforces min vinyl animation
+    const t = setTimeout(() => hideBootSplash(), 2600);
+    return () => clearTimeout(t);
   }, []);
 
   useEffect(() => {
-    if (loaded) SplashScreen.hideAsync();
+    if (loaded) void SplashScreen.hideAsync();
   }, [loaded]);
 
   useEffect(() => {

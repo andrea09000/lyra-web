@@ -34,8 +34,22 @@ Run lint and typecheck before declaring any task done.
 Use EAS to build, sign, and submit the app in the cloud (`eas build`, `eas submit`) and to ship over-the-air updates (`eas update`) — no local Xcode or Android Studio required. Run EAS CLI as `bunx eas-cli <command>` in Bun projects, or `npx eas-cli@latest <command>` otherwise; substitute that for bare `eas` in docs examples.
 Docs: https://docs.expo.dev/eas/index.md
 
+## Versioning (Vybe PWA)
+
+Source of truth: `constants/version.ts` (`APP_VERSION`, `APP_BUILD`).
+
+On every **production** deploy (`vercel --prod`), bump version before shipping:
+- **patch** (`1.1.0` → `1.1.1`): bugfix, cache, stream, splash
+- **minor** (`1.1.0` → `1.2.0`): new UX / feature
+- **major**: breaking
+
+Also sync `package.json` `version`, `app.json` `expo.version`, and bump `APP_BUILD`.
+Local/dev work does **not** require a bump until production.
+
 ## Rules
 
 - If `ios/` and `android/` directories do not exist, they are generated (Continuous Native Generation). Never create or edit them by hand — configure native behavior in `app.json` and config plugins.
+- No Google / cloud login — library stays on-device. Do not re-add “Continua con Google”.
+- Boot must show the Vybe logo splash (`#vybe-boot` / Gate), never a blank white or black frame.
 - Expo Go only includes its bundled native modules. After adding a library with native code, the app needs a development build: `npx expo run:ios|android` locally, or `eas build --profile development`.
 - Prefer recommended Expo modules over third-party libraries, and check your available skills before adding dependencies. Docs: https://docs.expo.dev/versions/latest/index.md

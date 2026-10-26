@@ -5,7 +5,7 @@ import { Radius, Type } from '@/constants/theme';
 import { usePlayer } from '@/context/PlayerContext';
 import { useTheme } from '@/context/ThemeContext';
 import { CoverImage } from '@/components/ui/CoverImage';
-import { prefetchAudioStream } from '@/services/youtube';
+import { prefetchAudioStream, prefetchPlayResolve, warmAudioProxy } from '@/services/youtube';
 
 type Props = {
   track: Track;
@@ -25,7 +25,11 @@ export function PosterTile({ track, queue, width = 140 }: Props) {
         { width, marginRight: 14 },
         pressed && { opacity: 0.88 },
       ]}
-      onPressIn={() => prefetchAudioStream(track.id)}
+      onPressIn={() => {
+        warmAudioProxy(track.id);
+        prefetchPlayResolve(track.id);
+        prefetchAudioStream(track.id);
+      }}
       onPress={() => {
         void Haptics.selectionAsync();
         playTrack(track, queue);

@@ -1,10 +1,8 @@
 const { cors } = require('../_lib/invidious');
-const { resolvePlayable } = require('../_lib/stream');
+const { getHead, resolveDirectAudioUrl, clientPrefersOpus } = require('../_lib/stream');
 
 /**
- * Resolve a browser-playable audio URL for a video id.
- * Direct Invidious-proxied AAC when possible; otherwise client uses /api/audio.
- *
+ * ytify-style play resolve — returns raw CDN URL for <audio src>.
  * GET /api/play/:id
  */
 module.exports = async function handler(req, res) {
@@ -22,30 +20,34 @@ module.exports = async function handler(req, res) {
     '://' +
     (req.headers['x-forwarded-host'] || req.headers.host || '');
   const proxy = `${origin}/api/audio/${encodeURIComponent(id)}`;
+  const go = `${origin}/api/go/${encodeURIComponent(id)}`;
 
   try {
-    const playable = await Promise.race([
-      resolvePlayable(id),
-      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000)),
-    ]);
-    res.setHeader('Cache-Control', 'public, s-maxage=120, stale-while-revalidate=300');
+    const preferOpus = clientPrefersOpus(req);
+    const { url, contentType } = await resolveDirectAudioUrl(id, { preferOpus });
+    res.setHeader('Cache-Control', 'public, s-maxage=90, stale-while-revalidate=300');
     return res.status(200).json({
       id,
-      url: playable.url || proxy,
-      mime: playable.mime || 'audio/mp4',
-      mode: playable.mode,
+      url,
+      mime: contentType || 'audio/mp4',
+      mode: 'direct',
       proxy,
-      bitrate: playable.bitrate || 0,
+      go,
+      source: preferOpus ? 'resolve-opus' : 'resolve-aac',
     });
-  } catch (err) {
-    // Always answer fast with proxy fallback — never hang the app
-    return res.status(200).json({
-      id,
-      url: proxy,
-      mime: 'audio/mp4',
-      mode: 'proxy',
-      proxy,
-      error: String(err?.message || err),
-    });
+  } catch {
+    // fall through
   }
+
+  void getHead(id).catch(() => undefined);
+
+  res.setHeader('Cache-Control', 'public, s-maxage=30, stale-while-revalidate=120');
+  return res.status(200).json({
+    id,
+    url: go,
+    mime: 'audio/mp4',
+    mode: 'go',
+    proxy,
+    go,
+  });
 };

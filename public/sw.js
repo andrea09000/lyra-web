@@ -1,5 +1,11 @@
-/* Lyra PWA — always pull the latest app from Vercel; Home icon URL never changes. */
-const CACHE = 'lyra-web-shell-v41';
+/* Vybe PWA — always pull the latest app from Vercel; Home icon URL never changes. */
+const CACHE = 'vybe-web-shell-v1';
+/** Keep Demus-style media caches across SW updates */
+const KEEP = new Set([
+  CACHE,
+  'vybe-covers-v1',
+  'lyra-audio-blobs-v1',
+]);
 
 self.addEventListener('install', (event) => {
   // Activate new SW immediately on every deploy
@@ -10,7 +16,7 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => !KEEP.has(k)).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
@@ -26,6 +32,37 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET') return;
 
   const url = new URL(request.url);
+
+  // Demus/Kingfisher-style: cache covers (CDN + /api/artists?u= proxy)
+  const isCover =
+    url.hostname === 'i.ytimg.com' ||
+    url.hostname.endsWith('.ytimg.com') ||
+    url.hostname.includes('ggpht.com') ||
+    url.hostname.includes('googleusercontent.com') ||
+    url.hostname.includes('piped') ||
+    url.hostname.endsWith('.private.coffee') ||
+    (url.origin === self.location.origin &&
+      url.pathname === '/api/artists' &&
+      url.searchParams.has('u'));
+  if (isCover) {
+    event.respondWith(
+      caches.open('vybe-covers-v1').then(async (cache) => {
+        const hit = await cache.match(request);
+        if (hit) return hit;
+        try {
+          const res = await fetch(request);
+          if (res.ok) {
+            void cache.put(request, res.clone());
+          }
+          return res;
+        } catch {
+          return hit || Response.error();
+        }
+      })
+    );
+    return;
+  }
+
   if (url.origin !== self.location.origin) return;
 
   // Never intercept API / audio — live from network

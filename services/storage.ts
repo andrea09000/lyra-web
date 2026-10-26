@@ -30,7 +30,7 @@ export async function loadHomeFeed(tasteKey: string): Promise<HomeFeedCache | nu
     const data = JSON.parse(raw) as HomeFeedCache;
     if (data.tasteKey !== tasteKey) return null;
     if (Date.now() - data.savedAt > HOME_FEED_TTL_MS) return null;
-    if (!data.forYou?.length && !data.trending?.length) return null;
+    if (!data.forYou?.length) return null;
     return data;
   } catch {
     return null;
@@ -145,6 +145,7 @@ export async function resetAppData() {
     KEYS.homeFeed,
     KEYS.artistImages,
     KEYS.tasteProfile,
+    '@lyra/recent-searches',
   ]);
 }
 

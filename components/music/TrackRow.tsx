@@ -3,7 +3,13 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { Track } from '@/types/music';
 import { Radius, Type } from '@/constants/theme';
-import { formatDuration, prefetchAudioStream, warmAudioProxy } from '@/services/youtube';
+import {
+  formatDuration,
+  prefetchAudioStream,
+  prefetchPlayResolve,
+  warmAudioProxy,
+} from '@/services/youtube';
+import { warmScrape } from '@/services/ytScrape.web';
 import { useAddToPlaylist } from '@/hooks/useAddToPlaylist';
 import { usePlayer } from '@/context/PlayerContext';
 import { useTheme } from '@/context/ThemeContext';
@@ -44,6 +50,9 @@ export function TrackRow({
     <Pressable
       style={({ pressed }) => [styles.row, pressed && { opacity: 0.8 }]}
       onPressIn={() => {
+        // ytify: warm streamCache on press-in so tap already has URL
+        warmScrape(track.id);
+        prefetchPlayResolve(track.id);
         warmAudioProxy(track.id);
         prefetchAudioStream(track.id);
       }}

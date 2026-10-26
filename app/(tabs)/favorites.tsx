@@ -5,14 +5,18 @@ import { Spacing } from '@/constants/theme';
 import { useLibrary } from '@/context/LibraryContext';
 import { useTheme } from '@/context/ThemeContext';
 import { useTopPad } from '@/hooks/useTopPad';
+import { ContentWidth } from '@/components/layout/ContentWidth';
+import { useTabBottomPad } from '@/hooks/useDesktop';
 
 export default function FavoritesScreen() {
-  const topPad = useTopPad(6);
+  const topPad = useTopPad(8);
+  const bottomPad = useTabBottomPad(190);
   const { colors } = useTheme();
   const { favorites } = useLibrary();
 
   return (
     <View style={[styles.root, { paddingTop: topPad, backgroundColor: colors.background }]}>
+      <ContentWidth>
       <Text style={[styles.kicker, { color: colors.green }]}>LIKED</Text>
       <Text style={[styles.heading, { color: colors.ink }]}>Preferiti</Text>
       <Text style={[styles.sub, { color: colors.muted }]}>
@@ -26,7 +30,7 @@ export default function FavoritesScreen() {
         keyExtractor={(item) => item.id}
         contentContainerStyle={{
           paddingHorizontal: Spacing.lg,
-          paddingBottom: 190,
+          paddingBottom: bottomPad,
           flexGrow: 1,
         }}
         ListEmptyComponent={
@@ -40,6 +44,7 @@ export default function FavoritesScreen() {
           <TrackRow track={item} queue={favorites} index={index} />
         )}
       />
+      </ContentWidth>
     </View>
   );
 }

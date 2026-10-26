@@ -132,7 +132,7 @@ export default function ImportScreen() {
 
         <Text style={[styles.heading, { color: colors.ink }]}>Da Spotify</Text>
         <Text style={[styles.lead, { color: colors.muted }]}>
-          Incolla il link di una playlist (o album). Lyra trova i brani su YouTube e te la
+          Incolla il link di una playlist (o album). Vybe trova i brani su YouTube e te la
           crea in Libreria.
         </Text>
 
@@ -204,7 +204,7 @@ export default function ImportScreen() {
             3. La playlist compare in Libreria (i brani privati/mancanti vengono saltati)
           </Text>
           <Text style={[styles.helpNote, { color: colors.muted }]}>
-            La playlist deve essere pubblica. Lyra legge il link Spotify e cerca ogni
+            La playlist deve essere pubblica. Vybe legge il link Spotify e cerca ogni
             brano su YouTube (qualche titolo può non combaciare al 100%).
           </Text>
         </View>

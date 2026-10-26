@@ -13,6 +13,12 @@ import {
   scrapeAudioCandidates,
   warmScrape,
 } from '@/services/ytScrape.web';
+import { prefetchPlayResolve as warmPlayResolve } from '@/services/playResolve.web';
+import { prefetchArtistCovers, prefetchTrackCovers } from '@/services/coverCache';
+
+export function prefetchPlayResolve(videoId: string): void {
+  warmPlayResolve(videoId);
+}
 
 function getScrapeUrl(): string {
   const fromEnv = process.env.EXPO_PUBLIC_SCRAPE_URL?.trim();
@@ -243,13 +249,15 @@ function normalizeArtistName(name: string): string {
 export async function searchArtists(query: string, limit = 1): Promise<TasteArtist[]> {
   const q = query.trim();
   if (!q) return [];
-  const cap = Math.min(Math.max(limit, 1), 3);
+  const cap = Math.min(Math.max(limit, 1), 24);
 
   const scraped = await scrapeGet<{ artists?: TasteArtist[] }>(
     `/api/artists?q=${encodeURIComponent(q)}&limit=${cap}`
   );
   if (scraped?.artists?.length) {
-    return scraped.artists.map((a) => ({ ...a, color: a.color || colorForId(a.id) }));
+    const list = scraped.artists.map((a) => ({ ...a, color: a.color || colorForId(a.id) }));
+    prefetchArtistCovers(list, 'md');
+    return list;
   }
 
   // Invidious channel search
@@ -274,7 +282,10 @@ export async function searchArtists(query: string, limit = 1): Promise<TasteArti
       });
       if (out.length >= cap) break;
     }
-    if (out.length) return out;
+    if (out.length) {
+      prefetchArtistCovers(out, 'md');
+      return out;
+    }
   } catch {
     // fall through
   }
@@ -295,6 +306,7 @@ export async function searchArtists(query: string, limit = 1): Promise<TasteArti
     });
     if (ranked.length >= cap) break;
   }
+  prefetchArtistCovers(ranked, 'md');
   return ranked;
 }
 
@@ -340,6 +352,8 @@ export async function hydrateArtistCovers(
   }
 
   void saveArtistImageCache(nextCache);
+  // Demus/Kingfisher: persist actual image bytes, not just URL strings
+  prefetchArtistCovers(results, 'md');
   return results;
 }
 
@@ -439,22 +453,66 @@ export async function getAudioStreamUrl(videoId: string): Promise<string> {
 }
 
 export function prefetchSearchResults(tracks: Track[], limit = 18): void {
-  // First hits: warm same-origin AAC proxy so tap → play doesn't wait on cold getHead
-  for (const t of tracks.slice(0, Math.min(4, limit))) {
-    warmAudioProxy(t.id);
-  }
-  for (const t of tracks.slice(0, limit)) prefetchAudioStream(t.id);
+  // Demus/Kingfisher: covers to disk first (instant list paint)
+  prefetchTrackCovers(tracks.slice(0, limit), 'sm');
+  // ytify: fill streamCache BEFORE tap — scrape first (browser → Inv), then /api/play
+  const list = tracks.slice(0, limit);
+  list.forEach((t, i) => {
+    const delay = i < 8 ? 0 : Math.min((i - 7) * 120, 1200);
+    window.setTimeout(() => {
+      if (i < 14) {
+        warmScrape(t.id);
+        prefetchPlayResolve(t.id);
+      }
+      if (i < 6) warmAudioProxy(t.id);
+      if (i < 10) prefetchAudioStream(t.id);
+    }, delay);
+  });
 }
 
-/** Hit /api/audio so Vercel caches the stream head before the user taps play. */
+const warmProxyInflight = new Set<string>();
+const warmProxyDone = new Map<string, number>();
+
+/**
+ * Warm the fast path before tap:
+ * 1) /api/go — resolves URL + 302 (fills server urlCache)
+ * 2) /api/audio — fills RAM head buffer as backup
+ */
 export function warmAudioProxy(videoId: string): void {
   if (!videoId || typeof window === 'undefined' || !window.location?.origin) return;
-  const url = `${window.location.origin}/api/audio/${encodeURIComponent(videoId)}`;
-  void fetch(url, {
+  const recent = warmProxyDone.get(videoId);
+  if (recent && Date.now() - recent < 90_000) return;
+  if (warmProxyInflight.has(videoId)) return;
+  warmProxyInflight.add(videoId);
+  const origin = window.location.origin;
+  const go = `${origin}/api/go/${encodeURIComponent(videoId)}`;
+  const audio = `${origin}/api/audio/${encodeURIComponent(videoId)}`;
+
+  const mark = () => warmProxyDone.set(videoId, Date.now());
+
+  // Tiny range after redirect — primes CDN + server resolve cache
+  void fetch(go, {
     method: 'GET',
-    headers: { Range: 'bytes=0-1' },
-    signal: AbortSignal.timeout(20000),
-  }).catch(() => undefined);
+    headers: { Range: 'bytes=0-2047' },
+    signal: AbortSignal.timeout(12000),
+  })
+    .then((res) => {
+      if (res.ok || res.status === 206 || res.type === 'opaqueredirect') mark();
+    })
+    .catch(() => undefined);
+
+  void fetch(audio, {
+    method: 'GET',
+    headers: { Range: 'bytes=0-65535' },
+    signal: AbortSignal.timeout(15000),
+  })
+    .then((res) => {
+      if (res.ok || res.status === 206) mark();
+    })
+    .catch(() => undefined)
+    .finally(() => {
+      warmProxyInflight.delete(videoId);
+    });
 }
 
 export function prefetchAudioStream(videoId: string): void {

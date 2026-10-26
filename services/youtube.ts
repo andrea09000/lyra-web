@@ -852,6 +852,11 @@ export function warmAudioProxy(_videoId: string): void {
   // implemented in youtube.web.ts
 }
 
+/** Web: warm /api/play resolve cache. Native: no-op. */
+export function prefetchPlayResolve(_videoId: string): void {
+  // implemented in youtube.web.ts
+}
+
 /** Warm cache for upcoming tracks without blocking playback. */
 export function prefetchAudioStream(videoId: string): void {
   if (!videoId || getCachedStream(videoId)) return;

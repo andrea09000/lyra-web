@@ -1,4 +1,5 @@
-import { StyleSheet, Text, View } from 'react-native';
+import { Image, StyleSheet, Text, View } from 'react-native';
+import { APP_NAME } from '@/constants/brand';
 import { Type } from '@/constants/theme';
 import { useTheme } from '@/context/ThemeContext';
 
@@ -6,27 +7,38 @@ type Props = {
   size?: 'sm' | 'md' | 'lg' | 'hero';
   light?: boolean;
   spine?: boolean;
+  /** Hide wordmark — logo only */
+  logoOnly?: boolean;
 };
 
-export function BrandMark({ size = 'md' }: Props) {
+const LOGO = '/logo.png';
+
+export function BrandMark({ size = 'md', logoOnly = false }: Props) {
   const { colors } = useTheme();
-  const fontSize = size === 'hero' ? 44 : size === 'lg' ? 30 : size === 'sm' ? 15 : 22;
+  const fontSize = size === 'hero' ? 36 : size === 'lg' ? 26 : size === 'sm' ? 15 : 20;
+  const disc = size === 'hero' ? 40 : size === 'lg' ? 32 : size === 'sm' ? 22 : 28;
 
   return (
-    <View style={styles.row} accessibilityRole="header" accessibilityLabel="Lyra">
-      <View style={[styles.wire, { backgroundColor: colors.green }]} />
-      <Text
-        style={[
-          styles.word,
-          {
-            fontSize,
-            color: colors.ink,
-            letterSpacing: size === 'hero' ? -1.6 : -0.8,
-          },
-        ]}
-      >
-        Lyra
-      </Text>
+    <View style={styles.row} accessibilityRole="header" accessibilityLabel={APP_NAME}>
+      <Image
+        source={{ uri: LOGO }}
+        style={{ width: disc, height: disc, borderRadius: disc / 2 }}
+        accessibilityIgnoresInvertColors
+      />
+      {logoOnly ? null : (
+        <Text
+          style={[
+            styles.word,
+            {
+              fontSize,
+              color: colors.ink,
+              letterSpacing: size === 'hero' ? -1.6 : -0.8,
+            },
+          ]}
+        >
+          {APP_NAME}
+        </Text>
+      )}
     </View>
   );
 }
@@ -36,12 +48,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-  },
-  /** Single taut string mark */
-  wire: {
-    width: 3,
-    height: 22,
-    borderRadius: 1,
   },
   word: {
     fontFamily: Type.brand || Type.display,

@@ -8,14 +8,18 @@ const PIPED = [
   'https://pipedapi.kavin.rocks',
 ];
 
-/** Bytes per response — larger init helps Safari start fragmented YouTube AAC. */
-const CHUNK = 1024 * 1024;
+/** First head bytes — enough for ftyp/moov/sidx so <audio> starts; keep small for TTFB. */
+const CHUNK = 64 * 1024;
+/** Subsequent Range responses from /api/audio can be larger. */
+const STREAM_CHUNK = 1024 * 1024;
 
 /** videoId -> { url, total, contentType, expires } */
 const urlCache = new Map();
 /** videoId -> { buf, total, contentType, expires } (first CHUNK, in RAM) */
 const headCache = new Map();
-const HEAD_CACHE_MAX = 40;
+/** videoId -> Promise<head> */
+const headInflight = new Map();
+const HEAD_CACHE_MAX = 48;
 
 function upstreamHeaders(range) {
   const headers = {
@@ -129,26 +133,39 @@ async function urlFromPiped(base, videoId) {
   };
 }
 
-function rankPlayableItems(a, b) {
-  // 1) Safari-safe AAC/MP4
-  const aSafe = isSafariSafeMime(a.mime) ? 1 : 0;
-  const bSafe = isSafariSafeMime(b.mime) ? 1 : 0;
-  if (aSafe !== bSafe) return bSafe - aSafe;
-  // 2) Browser-direct (inv-proxy / piped) over raw googlevideo
+function isOpusMime(mime) {
+  const m = String(mime || '').toLowerCase();
+  return m.includes('webm') || m.includes('opus');
+}
+
+/** Chrome/Firefox/Edge (incl. Android): Opus like ytify. Safari/iOS: AAC only. */
+function clientPrefersOpus(req) {
+  const ua = String(req?.headers?.['user-agent'] || '');
+  if (/iPhone|iPad|iPod/i.test(ua)) return false;
+  if (/Safari/i.test(ua) && !/Chrome|Chromium|CriOS|Edg|OPR/i.test(ua)) return false;
+  return /Chrome|Chromium|Firefox|Edg|OPR|Android/i.test(ua);
+}
+
+function rankPlayableItems(a, b, preferOpus = false) {
+  if (preferOpus) {
+    // ytify desktop: Opus first (smaller → faster start on PC)
+    const aOpus = isOpusMime(a.mime) ? 1 : 0;
+    const bOpus = isOpusMime(b.mime) ? 1 : 0;
+    if (aOpus !== bOpus) return bOpus - aOpus;
+  } else {
+    const aSafe = isSafariSafeMime(a.mime) ? 1 : 0;
+    const bSafe = isSafariSafeMime(b.mime) ? 1 : 0;
+    if (aSafe !== bSafe) return bSafe - aSafe;
+  }
+  // Prefer raw googlevideo for browser <audio> (ytify proxyHandler default)
   const aRaw = isRawGoogleVideo(a.url) ? 1 : 0;
   const bRaw = isRawGoogleVideo(b.url) ? 1 : 0;
-  if (aRaw !== bRaw) return aRaw - bRaw;
-  // 3) Bitrate
+  if (aRaw !== bRaw) return bRaw - aRaw;
   return (b.bitrate || 0) - (a.bitrate || 0);
 }
 
-/** Collect ranked stream candidates (objects). */
+/** Collect ranked stream candidates (objects). RapidAPI/Innertube first — public Inv is mostly dead. */
 async function collectCandidates(videoId) {
-  const jobs = [
-    ...INV.map((b) => urlFromInvidious(b, videoId)),
-    ...PIPED.map((b) => urlFromPiped(b, videoId)),
-  ];
-  const settled = await Promise.allSettled(jobs);
   const items = [];
   const seen = new Set();
   const push = (item) => {
@@ -156,29 +173,54 @@ async function collectCandidates(videoId) {
     seen.add(item.url);
     items.push(item);
   };
-  for (const s of settled) {
-    if (s.status === 'fulfilled') push(s.value);
-  }
 
-  // Always merge InnerTube — rewrite googlevideo via Invidious so the phone can play direct
+  // 1) RapidAPI / mirrors (ytify path) — keep youtubei off the hot path
   try {
     const { resolveInnertube } = require('./innertube');
-    const data = await resolveInnertube(videoId);
-    for (const invBase of INV.slice(0, 3)) {
-      for (const f of data.adaptiveFormats || []) {
-        if (!f.url) continue;
-        const raw = String(f.url);
-        if (raw.includes('/api/audio/')) continue;
-        const proxied = isRawGoogleVideo(raw) ? proxiedThroughInstance(raw, invBase) : null;
-        push({
-          url: proxied || raw,
-          bitrate: normBitrate(f.bitrate),
-          mime: f.type || 'audio/mp4',
-        });
+    const data = await Promise.race([
+      resolveInnertube(videoId, { fast: true }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('innertube-timeout')), 4000)),
+    ]);
+    for (const f of data.adaptiveFormats || []) {
+      if (!f.url) continue;
+      const raw = String(f.url);
+      if (raw.includes('/api/audio/')) continue;
+      // Prefer raw googlevideo for server-side getHead (Vercel can fetch it);
+      // also keep inv-proxied copies for browser-direct when mirrors work.
+      push({
+        url: raw,
+        bitrate: normBitrate(f.bitrate),
+        mime: f.type || 'audio/mp4',
+      });
+      if (isRawGoogleVideo(raw)) {
+        for (const invBase of INV.slice(0, 2)) {
+          const proxied = proxiedThroughInstance(raw, invBase);
+          if (proxied) {
+            push({
+              url: proxied,
+              bitrate: normBitrate(f.bitrate),
+              mime: f.type || 'audio/mp4',
+            });
+          }
+        }
       }
     }
   } catch {
-    // ignore
+    // fall through
+  }
+
+  // 2) Best-effort public mirrors (often down — short timeouts)
+  const jobs = [
+    ...INV.slice(0, 3).map((b) => urlFromInvidious(b, videoId)),
+    ...PIPED.map((b) => urlFromPiped(b, videoId)),
+  ];
+  const settled = await Promise.allSettled(
+    jobs.map((p) =>
+      Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('t')), 2500))])
+    )
+  );
+  for (const s of settled) {
+    if (s.status === 'fulfilled') push(s.value);
   }
 
   items.sort(rankPlayableItems);
@@ -194,61 +236,123 @@ async function candidateUrls(videoId) {
 
 /**
  * Best URL for <audio> in the browser — fail-fast.
- * Prefer Invidious-proxied AAC (direct play, no Vercel hop). Raw YT → use /api/audio.
+ * Today public Inv/Piped rarely return URLs (SABR). RapidAPI often does.
+ * Raw googlevideo → browser uses /api/audio; we still report mime/bitrate.
  */
 async function resolvePlayable(videoId) {
-  const jobs = [
-    ...INV.map((b) => urlFromInvidious(b, videoId)),
-    ...PIPED.map((b) => urlFromPiped(b, videoId)),
-  ];
-
-  // First Safari-safe non-raw wins — hard cap so /api/play never hangs the client
+  // RapidAPI first (ytify)
   try {
-    const winner = await Promise.race([
-      Promise.any(
-        jobs.map((p) =>
-          p.then((item) => {
-            if (!item?.url) throw new Error('empty');
-            if (!isSafariSafeMime(item.mime)) throw new Error('not aac');
-            if (isRawGoogleVideo(item.url)) throw new Error('raw');
-            return item;
-          })
-        )
-      ),
-      new Promise((_, rej) => setTimeout(() => rej(new Error('playable-timeout')), 4500)),
+    const { resolveInnertube } = require('./innertube');
+    const data = await Promise.race([
+      resolveInnertube(videoId, { fast: true }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('playable-timeout')), 2500)),
     ]);
-    return {
-      url: winner.url,
-      mime: winner.mime || 'audio/mp4',
-      bitrate: winner.bitrate || 0,
-      mode: 'direct',
-    };
+    const formats = (data.adaptiveFormats || [])
+      .filter((f) => f.url && !String(f.url).includes('/api/audio/'))
+      .sort((a, b) =>
+        rankPlayableItems(
+          { url: a.url, mime: a.type, bitrate: normBitrate(a.bitrate) },
+          { url: b.url, mime: b.type, bitrate: normBitrate(b.bitrate) }
+        )
+      );
+    const best = formats[0];
+    if (best?.url) {
+      // HTML5 <audio> can play googlevideo DIRECTLY (media element ≠ fetch CORS).
+      // Proxying via Vercel often 403s — browser IP works. ytify does the same.
+      return {
+        url: best.url,
+        mime: best.type || 'audio/mp4',
+        bitrate: normBitrate(best.bitrate),
+        mode: isRawGoogleVideo(best.url) ? 'direct-yt' : 'direct',
+      };
+    }
   } catch {
-    // fall through to proxy
+    // fall through
   }
 
-  // Slower path: full collect + InnerTube rewrite
-  const items = await collectCandidates(videoId);
-  if (!items.length) throw new Error('Nessuno stream disponibile');
-
-  const direct = items.find((i) => isSafariSafeMime(i.mime) && !isRawGoogleVideo(i.url));
-  if (direct) {
-    return {
-      url: direct.url,
-      mime: direct.mime || 'audio/mp4',
-      bitrate: direct.bitrate || 0,
-      mode: 'direct',
-    };
-  }
-
-  const anySafe = items.find((i) => isSafariSafeMime(i.mime)) || items[0];
   void getHead(videoId).catch(() => undefined);
   return {
     url: null,
-    mime: anySafe?.mime || 'audio/mp4',
-    bitrate: anySafe?.bitrate || 0,
+    mime: 'audio/mp4',
+    bitrate: 0,
     mode: 'proxy',
   };
+}
+
+/**
+ * Resolve a playable googlevideo/mirror URL WITHOUT downloading audio bytes.
+ * Used by /api/go 302 — browser streams straight from the CDN (fastest start).
+ * @param {string} videoId
+ * @param {{ preferOpus?: boolean }} [opts]
+ */
+function pickBestFormat(formats, preferOpus) {
+  const ranked = (formats || [])
+    .filter((f) => f.url && !String(f.url).includes('/api/audio/'))
+    .sort((a, b) =>
+      rankPlayableItems(
+        { url: a.url, mime: a.type, bitrate: normBitrate(a.bitrate) },
+        { url: b.url, mime: b.type, bitrate: normBitrate(b.bitrate) },
+        preferOpus
+      )
+    );
+  return ranked[0] || null;
+}
+
+async function resolveDirectAudioUrl(videoId, opts = {}) {
+  const preferOpus = opts.preferOpus === true;
+  const cacheKey = preferOpus ? `${videoId}:opus` : `${videoId}:aac`;
+
+  const keyed = urlCache.get(cacheKey);
+  if (keyed && keyed.expires > Date.now()) {
+    return { url: keyed.url, contentType: keyed.contentType || 'audio/mp4', total: keyed.total || 0 };
+  }
+
+  if (!preferOpus) {
+    const headHit = headCache.get(videoId);
+    if (headHit && headHit.expires > Date.now()) {
+      return { url: headHit.url, contentType: headHit.contentType || 'audio/mp4', total: headHit.total || 0 };
+    }
+  }
+
+  const { resolveInnertube } = require('./innertube');
+  let best = null;
+  try {
+    const data = await Promise.race([
+      resolveInnertube(videoId, { fast: true }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('resolve-timeout')), 4500)),
+    ]);
+    best = pickBestFormat(data.adaptiveFormats, preferOpus);
+  } catch {
+    // escalate below
+  }
+
+  // Hard tracks (age/cipher/region): full youtubei + Inv
+  if (!best?.url) {
+    try {
+      const data = await Promise.race([
+        resolveInnertube(videoId, { fast: false }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('resolve-slow-timeout')), 9000)),
+      ]);
+      best = pickBestFormat(data.adaptiveFormats, preferOpus);
+    } catch {
+      // fall through
+    }
+  }
+
+  if (!best?.url) throw new Error('no audio url');
+
+  const contentType = best.type || 'audio/mp4';
+  const clen = Number(best.clen || 0);
+  const entry = {
+    url: String(best.url),
+    total: Number.isFinite(clen) && clen > 0 ? clen : 0,
+    contentType,
+    expires: Date.now() + 12 * 60 * 1000,
+  };
+  urlCache.set(cacheKey, entry);
+  // Also seed generic key for getHead reuse
+  urlCache.set(videoId, entry);
+  return { url: entry.url, contentType, total: entry.total };
 }
 
 /**
@@ -259,66 +363,130 @@ async function getHead(videoId) {
   const hit = headCache.get(videoId);
   if (hit && hit.expires > Date.now()) return hit;
 
-  const urls = await candidateUrls(videoId);
-  let lastError;
+  const pending = headInflight.get(videoId);
+  if (pending) return pending;
 
-  for (const url of urls.slice(0, 5)) {
-    try {
-      const res = await fetch(url, {
-        headers: upstreamHeaders(`bytes=0-${CHUNK - 1}`),
-        signal: AbortSignal.timeout(12000),
-      });
-      if (!res.ok && res.status !== 206) {
-        lastError = new Error(`upstream ${res.status}`);
-        continue;
-      }
-      const buf = Buffer.from(await res.arrayBuffer());
-      const contentType = res.headers.get('content-type') || 'audio/mp4';
-      if (!looksLikeAudio(buf, contentType)) {
-        lastError = new Error('not audio');
-        continue;
-      }
+  const job = (async () => {
+    // Prefer URL already resolved by /api/go or /api/play
+    let urls = [];
+    const urlHit = urlCache.get(videoId);
+    if (urlHit && urlHit.expires > Date.now()) urls = [urlHit.url];
 
-      let total = 0;
-      const cr = res.headers.get('content-range');
-      const m = cr && /\/(\d+)/.exec(cr);
-      if (m) {
-        total = Number(m[1]);
-      } else if (res.status === 200) {
-        const cl = Number(res.headers.get('content-length') || 0);
-        // Full file returned without Range support
-        if (cl > 0 && buf.length >= cl) total = cl;
-        else if (buf.length > CHUNK) total = buf.length;
-        else {
-          // Short 200 with no Content-Range — don't poison total as CHUNK size
-          lastError = new Error('no content-range');
+    if (!urls.length) {
+      const { resolveInnertube } = require('./innertube');
+      for (const fast of [true, false]) {
+        try {
+          const data = await Promise.race([
+            resolveInnertube(videoId, { fast }),
+            new Promise((_, rej) =>
+              setTimeout(() => rej(new Error('t')), fast ? 4500 : 9000)
+            ),
+          ]);
+          urls = (data.adaptiveFormats || [])
+            .filter((f) => f.url && !String(f.url).includes('/api/audio/'))
+            .sort((a, b) =>
+              rankPlayableItems(
+                { url: a.url, mime: a.type, bitrate: normBitrate(a.bitrate) },
+                { url: b.url, mime: b.type, bitrate: normBitrate(b.bitrate) }
+              )
+            )
+            .map((f) => String(f.url));
+          if (urls.length) break;
+        } catch {
+          // try next
+        }
+      }
+    }
+    if (!urls.length) {
+      try {
+        urls = await candidateUrls(videoId);
+      } catch {
+        urls = [];
+      }
+    }
+    // Prefer Inv-rewritten mirrors for server fetch (raw GV often 403 from Vercel IP)
+    if (urls.length) {
+      const proxied = [];
+      const raw = [];
+      for (const u of urls) {
+        if (isRawGoogleVideo(u)) {
+          raw.push(u);
+          for (const invBase of INV.slice(0, 3)) {
+            const p = proxiedThroughInstance(u, invBase);
+            if (p) proxied.push(p);
+          }
+        } else {
+          proxied.push(u);
+        }
+      }
+      urls = [...proxied, ...raw];
+    }
+
+    let lastError;
+
+    for (const url of urls.slice(0, 6)) {
+      try {
+        const res = await fetch(url, {
+          headers: upstreamHeaders(`bytes=0-${CHUNK - 1}`),
+          signal: AbortSignal.timeout(4000),
+        });
+        if (!res.ok && res.status !== 206) {
+          lastError = new Error(`upstream ${res.status}`);
           continue;
         }
-      } else {
-        lastError = new Error('206 without content-range');
-        continue;
-      }
+        const buf = Buffer.from(await res.arrayBuffer());
+        const contentType = res.headers.get('content-type') || 'audio/mp4';
+        if (!looksLikeAudio(buf, contentType)) {
+          lastError = new Error('not audio');
+          continue;
+        }
 
-      if (!Number.isFinite(total) || total < 1024) {
-        lastError = new Error('bad total');
-        continue;
-      }
+        let total = 0;
+        const cr = res.headers.get('content-range');
+        const m = cr && /\/(\d+)/.exec(cr);
+        if (m) {
+          total = Number(m[1]);
+        } else if (res.status === 200) {
+          const cl = Number(res.headers.get('content-length') || 0);
+          if (cl > 0 && buf.length >= cl) total = cl;
+          else if (buf.length > CHUNK) total = buf.length;
+          else {
+            lastError = new Error('no content-range');
+            continue;
+          }
+        } else {
+          lastError = new Error('206 without content-range');
+          continue;
+        }
 
-      const entry = { url, buf, total, contentType, expires: Date.now() + 20 * 60 * 1000 };
-      headCache.set(videoId, entry);
-      urlCache.set(videoId, {
-        url,
-        total,
-        contentType,
-        expires: Date.now() + 20 * 60 * 1000,
-      });
-      trimHeadCache();
-      return entry;
-    } catch (err) {
-      lastError = err;
+        if (!Number.isFinite(total) || total < 1024) {
+          lastError = new Error('bad total');
+          continue;
+        }
+
+        const entry = { url, buf, total, contentType, expires: Date.now() + 20 * 60 * 1000 };
+        headCache.set(videoId, entry);
+        urlCache.set(videoId, {
+          url,
+          total,
+          contentType,
+          expires: Date.now() + 20 * 60 * 1000,
+        });
+        trimHeadCache();
+        return entry;
+      } catch (err) {
+        lastError = err;
+      }
     }
+    throw lastError || new Error('Nessuno stream');
+  })();
+
+  headInflight.set(videoId, job);
+  try {
+    return await job;
+  } finally {
+    headInflight.delete(videoId);
   }
-  throw lastError || new Error('Nessuno stream');
 }
 
 async function resolveStream(videoId) {
@@ -339,13 +507,18 @@ function parseRange(header, total) {
   const start = Math.min(Number(m[1]), maxEnd);
   let end = m[2] !== '' && m[2] !== undefined ? Number(m[2]) : maxEnd;
   end = Math.min(end, maxEnd);
-  if (end - start + 1 > CHUNK) end = start + CHUNK - 1;
+  const cap = start === 0 ? CHUNK : STREAM_CHUNK;
+  if (end - start + 1 > cap) end = start + cap - 1;
   return { start, end };
 }
 
 function dropCaches(videoId) {
+  if (!videoId) return;
   urlCache.delete(videoId);
+  urlCache.delete(`${videoId}:opus`);
+  urlCache.delete(`${videoId}:aac`);
   headCache.delete(videoId);
+  headInflight.delete(videoId);
   try {
     const { dropInnertubeCache } = require('./innertube');
     dropInnertubeCache(videoId);
@@ -357,6 +530,8 @@ function dropCaches(videoId) {
 module.exports = {
   CHUNK,
   getHead,
+  resolveDirectAudioUrl,
+  clientPrefersOpus,
   resolveStream,
   resolvePlayable,
   collectCandidates,

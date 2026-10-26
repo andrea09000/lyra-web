@@ -20,7 +20,7 @@ async function applyCallFriendlyAudioMode() {
   await setAudioModeAsync({
     playsInSilentMode: true,
     shouldPlayInBackground: true,
-    // Lets Lyra keep (or resume) audio alongside phone/VoIP when the OS allows it
+    // Lets Vybe keep (or resume) audio alongside phone/VoIP when the OS allows it
     interruptionMode: 'mixWithOthers',
     allowsRecording: false,
     shouldRouteThroughEarpiece: false,
@@ -314,7 +314,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       player.setActiveForLockScreen(true, {
         title: track.title,
         artist: track.artist,
-        albumTitle: 'Lyra',
+        albumTitle: 'Vybe',
         artworkUrl: track.thumbnail,
       });
     } catch {

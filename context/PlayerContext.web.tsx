@@ -14,13 +14,12 @@ import {
   createBackgroundAudioElement,
   unlockWebAudio,
 } from '@/services/backgroundAudio.web';
-import { prefetchAudioStream } from '@/services/youtube';
+import { prefetchAudioStream, prefetchPlayResolve, warmAudioProxy } from '@/services/youtube';
 import {
   cacheTrackAudio,
   getLocalAudioUri,
   peekLocalAudioUri,
   saveTrackToDevice,
-  warmLibraryAudio,
 } from '@/services/downloads';
 import {
   forgetScrape,
@@ -31,6 +30,15 @@ import {
   scrapeAudioCandidates,
 } from '@/services/ytScrape.web';
 import { buildRadioQueue, recordListen } from '@/services/tasteEngine';
+import { peekPlayResolve, resolvePlayUrl } from '@/services/playResolve.web';
+import {
+  audioErrorHandler,
+  cacheRemove as ytifyCacheRemove,
+  getStreamData,
+  ytifyPlay,
+} from '@/services/ytifyCore.web';
+import { proxyHandler } from '@/services/ytifyStream.web';
+import { prefetchTrackCovers } from '@/services/coverCache';
 
 export type PlayOptions = {
   /** false = stick to playlist/mood list; true (default) = personalized radio after this track */
@@ -69,10 +77,11 @@ type PlayerContextValue = {
 
 const PlayerContext = createContext<PlayerContextValue | null>(null);
 
-/** Per-URL audition budget — fail fast on directs; proxy needs room for cold getHead. */
-const CANDIDATE_MS = 600;
-const PROXY_CANDIDATE_MS = 18000;
-const BLOB_CANDIDATE_MS = 500;
+const CANDIDATE_MS = 2000;
+/** Proxy should be warm from prefetch; keep budget tight so we failover fast */
+const PROXY_CANDIDATE_MS = 3500;
+const BLOB_CANDIDATE_MS = 400;
+const DIRECT_CANDIDATE_MS = 2800;
 /** YouTube adaptive streams often report a padded duration (silence after the song). */
 const END_EPSILON_SEC = 0.35;
 const STALL_MS = 1600;
@@ -92,19 +101,60 @@ function resolveDuration(metaSec: number, mediaSec: number): number {
   return meta || media || 0;
 }
 
-function isAudible(audio: HTMLAudioElement): boolean {
-  return !audio.error && !audio.paused && audio.readyState >= 2;
+type DecAudio = HTMLAudioElement & {
+  webkitAudioDecodedByteCount?: number;
+  mozAudioDecodedBytes?: number;
+};
+
+/** Chrome/Firefox expose decoded PCM bytes — 0 while "playing" = silent stream. */
+function decodedAudioBytes(audio: HTMLAudioElement): number | null {
+  const a = audio as DecAudio;
+  if (typeof a.webkitAudioDecodedByteCount === 'number') return a.webkitAudioDecodedByteCount;
+  if (typeof a.mozAudioDecodedBytes === 'number') return a.mozAudioDecodedBytes;
+  return null;
 }
 
-/** True when playback is actually running (not just play() resolved). */
+function ensureLoud(audio: HTMLAudioElement) {
+  try {
+    audio.muted = false;
+    if (audio.volume < 0.2) audio.volume = 1;
+  } catch {
+    // ignore
+  }
+}
+
+function isAudible(audio: HTMLAudioElement): boolean {
+  // readyState alone is not enough — /api/audio can sit at HAVE_ENOUGH_DATA with t≈0
+  if (audio.error || audio.paused) return false;
+  if (audio.muted || audio.volume === 0) return false;
+  if (audio.readyState < 2) return false;
+  if (audio.currentTime <= 0.08) return false;
+  const bytes = decodedAudioBytes(audio);
+  // Timeline can advance on dead/silent streams; require real decode when the API exists
+  if (bytes !== null && audio.currentTime > 0.4 && bytes < 128) return false;
+  return true;
+}
+
+/** Real playback with sound — do NOT replace src (causes rewind). */
+function isProgressing(audio: HTMLAudioElement): boolean {
+  if (audio.error) return false;
+  if (audio.muted || audio.volume === 0) return false;
+  // Never trust currentTime alone — silent streams still advance the seek bar
+  return isAudible(audio);
+}
+
+/** True when playback is actually producing audio (not just play() / timeupdate). */
 function waitUntilAudible(audio: HTMLAudioElement, ms: number): Promise<boolean> {
+  ensureLoud(audio);
   if (isAudible(audio)) return Promise.resolve(true);
   return new Promise((resolve) => {
     let settled = false;
+    const started = Date.now();
     const done = (ok: boolean) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearInterval(poll);
       audio.removeEventListener('playing', onOk);
       audio.removeEventListener('canplay', onCanPlay);
       audio.removeEventListener('canplaythrough', onCanPlay);
@@ -113,23 +163,31 @@ function waitUntilAudible(audio: HTMLAudioElement, ms: number): Promise<boolean>
       audio.removeEventListener('error', onError);
       resolve(ok);
     };
+    const good = () => {
+      ensureLoud(audio);
+      return isAudible(audio);
+    };
     const kickPlay = () => {
+      ensureLoud(audio);
       void audio.play().then(() => {
-        if (isAudible(audio)) done(true);
+        if (good()) done(true);
       }).catch(() => undefined);
     };
     const onOk = () => {
-      if (isAudible(audio)) done(true);
+      if (good()) done(true);
     };
     const onCanPlay = () => {
       // Safari often fires canplay while still "paused" until play() sticks
       kickPlay();
-      if (isAudible(audio) || (audio.readyState >= 2 && !audio.error && !audio.paused)) {
-        done(true);
-      }
+      if (good()) done(true);
     };
     const onError = () => done(false);
-    const timer = setTimeout(() => done(isAudible(audio)), ms);
+    // Poll decode bytes — timeupdate alone can lie on silent CDN URLs
+    const poll = setInterval(() => {
+      if (good()) done(true);
+      else if (Date.now() - started >= ms) done(false);
+    }, 200);
+    const timer = setTimeout(() => done(good()), ms);
     audio.addEventListener('playing', onOk);
     audio.addEventListener('canplay', onCanPlay);
     audio.addEventListener('canplaythrough', onCanPlay);
@@ -140,27 +198,9 @@ function waitUntilAudible(audio: HTMLAudioElement, ms: number): Promise<boolean>
   });
 }
 
-type PlayResolve = { url: string; proxy: string; mode: string };
-
-/** Fast resolve: Invidious AAC direct when possible, else same-origin proxy. */
-async function resolvePlayUrl(trackId: string, ms = 10000): Promise<PlayResolve | null> {
-  if (typeof window === 'undefined' || !window.location?.origin) return null;
-  const proxy = `${window.location.origin}/api/audio/${encodeURIComponent(trackId)}`;
-  try {
-    const res = await fetch(
-      `${window.location.origin}/api/play/${encodeURIComponent(trackId)}`,
-      { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(ms) }
-    );
-    if (!res.ok) return { url: proxy, proxy, mode: 'proxy' };
-    const data = (await res.json()) as { url?: string; proxy?: string; mode?: string };
-    return {
-      url: data.url || proxy,
-      proxy: data.proxy || proxy,
-      mode: data.mode || 'proxy',
-    };
-  } catch {
-    return { url: proxy, proxy, mode: 'proxy' };
-  }
+function sameOriginProxy(trackId: string): string | null {
+  if (typeof window === 'undefined' || !window.location?.origin || !trackId) return null;
+  return `${window.location.origin}/api/audio/${encodeURIComponent(trackId)}`;
 }
 
 function browserNeedsMp4(): boolean {
@@ -186,21 +226,16 @@ function orderPlayUrls(urls: string[]): string[] {
   for (const u of urls) {
     if (!u || seen.has(u)) continue;
     seen.add(u);
-    if (u.includes('/api/audio/')) {
+    if (u.includes('/api/audio/') || u.includes('/api/go/')) {
       proxy.push(u);
       continue;
     }
-    // Safari/iOS: googlevideo WebM never plays — don't burn audition budget
     if (skipWebm && looksLikeWebmUrl(u)) continue;
+    // ytify: raw googlevideo + inv-proxy both OK in Chrome <audio>
     direct.push(u);
   }
-  // Direct inv-proxy AAC first (fast), then same-origin proxy, then other directs.
-  return [...direct.slice(0, 2), ...proxy, ...direct.slice(2)];
-}
-
-function sameOriginProxy(trackId: string): string | null {
-  if (typeof window === 'undefined' || !window.location?.origin || !trackId) return null;
-  return `${window.location.origin}/api/audio/${encodeURIComponent(trackId)}`;
+  // Direct CDN first (ytify), same-origin proxy last
+  return [...direct.slice(0, 2), ...proxy.slice(0, 1)];
 }
 
 function setMediaHandler(
@@ -233,7 +268,7 @@ function bindMediaSession(
     navigator.mediaSession.metadata = new MediaMetadata({
       title: track.title,
       artist: track.artist,
-      album: 'Lyra',
+      album: 'Vybe',
       artwork: track.thumbnail
         ? [
             { src: track.thumbnail, sizes: '96x96', type: 'image/jpeg' },
@@ -247,12 +282,13 @@ function bindMediaSession(
   }
   setMediaHandler('play', handlers.play);
   setMediaHandler('pause', handlers.pause);
+  // nexttrack / previoustrack → icone skip canzone (non ±10s)
   setMediaHandler('previoustrack', handlers.prev);
   setMediaHandler('nexttrack', handlers.next);
-  // Lock screen / Control Center / headset often fire seek± instead of next/prev.
-  // For music we want track skip, not ±10s scrub.
-  setMediaHandler('seekbackward', () => handlers.prev());
-  setMediaHandler('seekforward', () => handlers.next());
+  // Se registri seekbackward/forward il sistema mostra ±10s anche se fai skip:
+  // vanno azzerati così restano solo le frecce brano precedente/successivo.
+  setMediaHandler('seekbackward', null);
+  setMediaHandler('seekforward', null);
   setMediaHandler('seekto', (details) => {
     if (typeof details.seekTime === 'number') handlers.seek(details.seekTime);
   });
@@ -373,12 +409,35 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       syncDuration();
     };
 
+    let silenceSince = 0;
+
     const onTime = () => {
       if (!wantPlayingRef.current) return;
+      ensureLoud(audio);
       const t = audio.currentTime || 0;
       setPosition(t);
       positionRef.current = t;
       if (t > listenPeakRef.current) listenPeakRef.current = t;
+
+      // Seek bar moving but no decoded audio → dead stream; recover like onError
+      const bytes = decodedAudioBytes(audio);
+      if (
+        !audio.paused &&
+        !switchingRef.current &&
+        !recoveringRef.current &&
+        t > 0.7 &&
+        bytes !== null &&
+        bytes < 256
+      ) {
+        if (!silenceSince) silenceSince = Date.now();
+        else if (Date.now() - silenceSince >= 1100) {
+          silenceSince = 0;
+          audio.dispatchEvent(new Event('error'));
+          return;
+        }
+      } else {
+        silenceSince = 0;
+      }
 
       const dur = syncDuration();
       const meta = metaDurationRef.current;
@@ -468,15 +527,34 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       if (!wantPlayingRef.current || switchingRef.current || recoveringRef.current) return;
       const track = currentRef.current;
       if (!track) return;
+
       recoveringRef.current = true;
+      switchingRef.current = true;
+      setError(null);
+
+      // ytify audioErrorHandler — rewrite googlevideo → sticky Inv (exact port)
+      if (audioErrorHandler(audio)) {
+        window.setTimeout(() => {
+          switchingRef.current = false;
+          recoveringRef.current = false;
+          if (isAudible(audio)) {
+            setPlaying(true);
+            setLoading(false);
+          }
+        }, 1800);
+        return;
+      }
+
+      // Full retry via ytify getStreamData
+      ytifyCacheRemove(track.id);
       forgetScrape(track.id);
       setLoading(true);
-      setError(null);
       const token = ++loadToken.current;
       void loadAndPlayRef
         .current(track, token)
         .finally(() => {
           recoveringRef.current = false;
+          switchingRef.current = false;
         });
     };
 
@@ -536,8 +614,12 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     if (mem) return mem;
     const hydrated = await getLocalAudioUri(trackId);
     if (hydrated) return hydrated;
+    const play = peekPlayResolve(trackId);
+    if (play?.url && !play.url.includes('/api/audio/')) return play.url;
     const list = peekScrapeCandidates(trackId);
-    if (list[0]?.url) return list[0].url;
+    const direct = list.find((c) => !c.url.includes('/api/audio/'));
+    if (direct?.url) return direct.url;
+    if (play?.url) return play.url;
     return peekScrapeUrl(trackId);
   }, []);
 
@@ -550,17 +632,23 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       }
       if (preloadedIdRef.current === track.id && el.src) return;
 
-      cacheTrackAudio(track.id);
       prefetchAudioStream(track.id);
+      prefetchPlayResolve(track.id);
+      warmAudioProxy(track.id);
 
       void (async () => {
         let url = await resolveReadyUrl(track.id);
         if (!url) {
           try {
-            const fresh = await scrapeAudioCandidates(track.id);
+            const [fresh, resolved] = await Promise.all([
+              scrapeAudioCandidates(track.id),
+              resolvePlayUrl(track.id, 8000),
+            ]);
             url =
               (await getLocalAudioUri(track.id)) ||
               fresh.find((c) => !c.url.includes('/api/audio/'))?.url ||
+              (resolved?.url && !resolved.url.includes('/api/audio/') ? resolved.url : null) ||
+              resolved?.url ||
               fresh[0]?.url ||
               null;
           } catch {
@@ -598,15 +686,24 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     (track: Track) => {
       const q = queueRef.current;
       const idx = q.findIndex((t) => t.id === track.id);
-      const upcoming = idx >= 0 ? q.slice(idx + 1, idx + 5) : q.slice(0, 4);
-      if (upcoming.length) warmLibraryAudio(upcoming);
-      for (const n of upcoming) {
-        prefetchAudioStream(n.id);
-        cacheTrackAudio(n.id);
-        void getLocalAudioUri(n.id);
-      }
+      // Warm further ahead so track 3+ isn't cold (search only pre-warms the head)
+      const upcoming = idx >= 0 ? q.slice(idx + 1, idx + 8) : q.slice(0, 6);
+      prefetchTrackCovers([track, ...upcoming], 'lg');
+      upcoming.forEach((n, i) => {
+        const delay = i * 350;
+        window.setTimeout(() => {
+          if (currentRef.current?.id !== track.id) return;
+          prefetchAudioStream(n.id);
+          prefetchPlayResolve(n.id);
+          if (i < 3) warmAudioProxy(n.id);
+        }, delay);
+      });
       const next = upcoming[0] ?? null;
       armPreload(next);
+      window.setTimeout(() => {
+        if (currentRef.current?.id !== track.id) return;
+        for (const n of upcoming.slice(0, 2)) cacheTrackAudio(n.id);
+      }, 5000);
     },
     [armPreload]
   );
@@ -625,6 +722,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
         const local = url.startsWith('blob:') || url.startsWith('file:');
         const proxy = url.includes('/api/audio/');
+        const playUrl = local || proxy ? url : proxyHandler(url);
 
         try {
           audio.pause();
@@ -634,7 +732,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
           // ignore
         }
         // Do NOT set currentTime before metadata — Safari aborts the load
-        audio.src = url;
+        audio.src = playUrl;
         try {
           audio.load();
         } catch {
@@ -642,11 +740,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         }
 
         // Direct inv-proxy is usually fast; same-origin proxy may cold-start
-        const budget = local
-          ? BLOB_CANDIDATE_MS
-          : proxy
-            ? PROXY_CANDIDATE_MS
-            : Math.max(CANDIDATE_MS, 4500);
+        const budget = local ? BLOB_CANDIDATE_MS : proxy ? PROXY_CANDIDATE_MS : CANDIDATE_MS;
         const ok = await waitUntilAudible(audio, budget);
         if (token !== loadToken.current || !wantPlayingRef.current) {
           switchingRef.current = false;
@@ -723,23 +817,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
   const failTrack = useCallback((token: number) => {
     if (token !== loadToken.current) return;
-    setLoading(false);
-    failStreakRef.current += 1;
-    // Prefer skipping over a dead-end error toast — but stop after a streak of dead streams
-    const q = queueRef.current;
-    const cur = currentRef.current;
-    const idx = cur ? q.findIndex((t) => t.id === cur.id) : -1;
-    const hasNext = idx >= 0 && idx + 1 < q.length;
-    // Don't auto-skip the very first failures on a fresh search seed — show error so
-    // the user can retry instead of spinning "Caricamento…" across dead radio fills.
-    if (failStreakRef.current < 3 && hasNext) {
-      setError(null);
-      setTimeout(() => {
-        if (token !== loadToken.current) return;
-        playNextRef.current();
-      }, 120);
-      return;
-    }
+    // Never auto-skip — stay on this track and let the user retry / pick another
     failStreakRef.current = 0;
     setError('Stream assente — riprova o scegli un altro brano');
     setPlaying(false);
@@ -752,86 +830,101 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       const audio = audioRef.current;
       if (!audio) return;
 
-      setLoading(true);
       setError(null);
-      switchingRef.current = false;
 
       const proxy = sameOriginProxy(track.id);
-      // Parallel: scrape mirrors + /api/play resolve (no serial IDB wait — that made search feel stuck)
-      const scrapePromise = scrapeAudioCandidates(track.id);
-      const playPromise = resolvePlayUrl(track.id, 12000);
-      void getLocalAudioUri(track.id); // warm blob for next time only
 
-      // 0) In-memory blob only (instant)
-      const memLocal = peekLocalAudioUri(track.id);
-      if (memLocal) {
-        const result = await tryUrls(audio, track.id, [memLocal], token);
-        if (result === 'ok') {
-          prefetchUpcoming(track);
-          return;
-        }
-        if (result === 'abort') return;
-      }
-
-      // 1) /api/play → direct Invidious AAC when possible, else proxy (ONE shot, no double warm)
-      const resolved = await playPromise;
-      if (token !== loadToken.current || !wantPlayingRef.current) return;
-
-      const primary: string[] = [];
-      if (resolved?.url) primary.push(resolved.url);
-      if (resolved?.proxy && resolved.proxy !== resolved.url) primary.push(resolved.proxy);
-      else if (proxy && !primary.includes(proxy)) primary.push(proxy);
-
-      // Merge any scrape hits already ready (Safari skips WebM in orderPlayUrls)
-      const cachedList = peekScrapeCandidates(track.id).map((c) => c.url);
-      const cachedOne = peekScrapeUrl(track.id);
-      const instant = [
-        ...primary,
-        ...(cachedList.length ? cachedList : cachedOne ? [cachedOne] : []),
-      ];
-
-      if (instant.length) {
-        const result = await tryUrls(audio, track.id, instant.slice(0, 6), token);
-        if (result === 'ok') {
-          prefetchUpcoming(track);
-          void saveTrackToDevice(track).catch(() => undefined);
-          return;
-        }
-        if (result === 'abort') return;
-      }
-
-      // 2) Fresh scrape leftovers
-      let urls: string[] = [];
-      try {
-        urls = (await scrapePromise).map((c) => c.url);
-      } catch {
-        // empty
-      }
-      if (token !== loadToken.current || !wantPlayingRef.current) return;
-      if (proxy && !urls.includes(proxy)) urls = [...urls, proxy];
-      if (!urls.length) {
-        failTrack(token);
-        return;
-      }
-
-      const result = await tryUrls(audio, track.id, urls, token);
-      if (result === 'ok') {
+      const onOk = () => {
+        failStreakRef.current = 0;
+        setPlaying(true);
+        setLoading(false);
+        setError(null);
+        switchingRef.current = false;
+        const src = audio.currentSrc || audio.src || '';
+        if (src) rememberScrapeHit(track.id, src);
         prefetchUpcoming(track);
         void saveTrackToDevice(track).catch(() => undefined);
+      };
+
+      const stillMine = () => token === loadToken.current && wantPlayingRef.current;
+
+      if (isAudible(audio)) {
+        onOk();
         return;
       }
-      if (result === 'abort') return;
 
-      // 3) Hard retry via proxy
-      if (proxy) {
-        forgetScrape(track.id);
-        const again = await tryUrls(audio, track.id, [proxy], token);
-        if (again === 'ok') {
-          prefetchUpcoming(track);
-          void saveTrackToDevice(track).catch(() => undefined);
+      setLoading(true);
+      switchingRef.current = true;
+
+      // 0) Local blob (already listened)
+      const memLocal = peekLocalAudioUri(track.id);
+      if (memLocal && !(audio.currentSrc || audio.src)) {
+        const result = await tryUrls(audio, track.id, [memLocal], token);
+        if (result === 'ok') {
+          onOk();
           return;
         }
-        if (again === 'abort') return;
+        if (result === 'abort') return;
+      }
+
+      if (!stillMine()) {
+        if (token === loadToken.current) switchingRef.current = false;
+        return;
+      }
+
+      // 1) ytify player(id): getStreamData → preferredStream → proxyHandler → play
+      // (cache cleared only on error — same as ytify streamCache)
+      const played = await ytifyPlay(track.id, audio);
+      if (!stillMine()) {
+        if (token === loadToken.current) switchingRef.current = false;
+        return;
+      }
+      if (played.ok) {
+        if (played.lengthSeconds > 0) {
+          metaDurationRef.current = played.lengthSeconds;
+          durationRef.current = resolveDuration(played.lengthSeconds, durationRef.current);
+          setDuration(durationRef.current);
+        }
+        const ok = await waitUntilAudible(audio, DIRECT_CANDIDATE_MS);
+        if (!stillMine()) {
+          if (token === loadToken.current) switchingRef.current = false;
+          return;
+        }
+        if (ok || isAudible(audio)) {
+          onOk();
+          return;
+        }
+        // ytify audioErrorHandler once
+        if (audioErrorHandler(audio)) {
+          const ok2 = await waitUntilAudible(audio, DIRECT_CANDIDATE_MS);
+          if (!stillMine()) {
+            if (token === loadToken.current) switchingRef.current = false;
+            return;
+          }
+          if (ok2 || isAudible(audio)) {
+            onOk();
+            return;
+          }
+        }
+      }
+
+      // 2) Last resort: same-origin /api/audio (ytify emergency edge equivalent)
+      if (proxy) {
+        try {
+          audio.src = `${proxy}${proxy.includes('?') ? '&' : '?'}t=${Date.now()}`;
+          void audio.play().catch(() => undefined);
+        } catch {
+          // ignore
+        }
+        const ok = await waitUntilAudible(audio, PROXY_CANDIDATE_MS);
+        if (!stillMine()) {
+          if (token === loadToken.current) switchingRef.current = false;
+          return;
+        }
+        if (ok || isAudible(audio)) {
+          onOk();
+          return;
+        }
       }
 
       failTrack(token);
@@ -881,7 +974,13 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       const nextQ = [...q, ...fresh];
       queueRef.current = nextQ;
       setQueue(nextQ);
-      warmLibraryAudio(fresh.slice(0, 8));
+      fresh.slice(0, 8).forEach((t, i) => {
+        window.setTimeout(() => {
+          prefetchAudioStream(t.id);
+          prefetchPlayResolve(t.id);
+          if (i < 3) warmAudioProxy(t.id);
+        }, i * 400);
+      });
       const cur = currentRef.current;
       if (cur) {
         const idx = nextQ.findIndex((t) => t.id === cur.id);
@@ -921,8 +1020,16 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       if (opts?.queue && opts.queue.length > 0) {
         queueRef.current = opts.queue;
         setQueue(opts.queue);
-        // Warm whole playlist (blobs) so consecutive tracks are ready
-        warmLibraryAudio(opts.queue.slice(0, 25));
+        // Warm neighbors hard so track 3+ isn't cold when autoplay reaches them
+        opts.queue.slice(0, 10).forEach((t, i) => {
+          if (t.id === track.id) return;
+          const delay = i < 3 ? 0 : i * 200;
+          window.setTimeout(() => {
+            prefetchPlayResolve(t.id);
+            warmAudioProxy(t.id);
+            if (i < 6) prefetchAudioStream(t.id);
+          }, delay);
+        });
       }
 
       currentRef.current = track;
@@ -940,7 +1047,6 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       wantPlayingRef.current = true;
 
       void addRecent(track);
-      cacheTrackAudio(track.id);
 
       if (radioModeRef.current) {
         const q = queueRef.current;
@@ -954,7 +1060,53 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      void scrapeAudioCandidates(track.id);
+      // === ytify player(id) ===
+      // local blob → getStreamData + preferredStream + proxyHandler (exact ytify)
+      const audio = audioRef.current;
+      if (audio) {
+        switchingRef.current = true;
+        audio.muted = false;
+        audio.volume = 1;
+        try {
+          delete audio.dataset.retried;
+        } catch {
+          // ignore
+        }
+
+        const local = peekLocalAudioUri(track.id);
+        if (local) {
+          try {
+            audio.src = local;
+            void audio.play().catch(() => undefined);
+          } catch {
+            // ignore
+          }
+        }
+
+        if (!local) {
+          void getLocalAudioUri(track.id).then((uri) => {
+            if (!uri || token !== loadToken.current) return;
+            if (isAudible(audio)) return;
+            try {
+              audio.src = uri;
+              void audio.play().catch(() => undefined);
+            } catch {
+              // ignore
+            }
+          });
+        }
+
+        // Primary: ytify getStreamData → applyAudioStreams (sets src + play)
+        void ytifyPlay(track.id, audio).then((res) => {
+          if (token !== loadToken.current || !wantPlayingRef.current) return;
+          if (!res.ok) return;
+          if (res.lengthSeconds > 0 && metaDurationRef.current <= 0) {
+            metaDurationRef.current = res.lengthSeconds;
+            setDuration(res.lengthSeconds);
+          }
+        });
+      }
+
       void loadAndPlay(track, token);
     },
     [addRecent, commitListen, fillRadio, loadAndPlay, playFromPreload]
@@ -973,9 +1125,28 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      // Search / home / single tap: start a radio session from this seed
+      // Search / home: keep nearby results as provisional queue so scrape prefetch
+      // of neighbors is useful — fillRadio appends recommendations after.
       if (radio) {
-        switchToTrack(track, { queue: [track] });
+        let seedQ: Track[] = [track];
+        if (nextQueue?.length) {
+          const idx = nextQueue.findIndex((t) => t.id === track.id);
+          const from = idx >= 0 ? idx : 0;
+          const neighbors = nextQueue.slice(from, from + 8);
+          const seen = new Set<string>();
+          seedQ = [];
+          for (const t of neighbors) {
+            if (seen.has(t.id)) continue;
+            seen.add(t.id);
+            seedQ.push(t);
+          }
+          if (!seedQ.some((t) => t.id === track.id)) seedQ = [track, ...seedQ];
+          else {
+            // Ensure tapped track is first
+            seedQ = [track, ...seedQ.filter((t) => t.id !== track.id)];
+          }
+        }
+        switchToTrack(track, { queue: seedQ });
         void fillRadio(track);
         return;
       }
