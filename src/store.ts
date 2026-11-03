@@ -47,7 +47,7 @@ const storeInit: {
   translations: Record<TranslationKeys, string> | {};
   libraryUpdated: number;
 } = {
-  api: import.meta.env.DEV ? "" : "https://api.ytify.workers.dev",
+  api: import.meta.env.DEV ? "" : "https://musicvybee.netlify.app",
   useSaavn: true,
   locale: initLocale,
   translations: {},
