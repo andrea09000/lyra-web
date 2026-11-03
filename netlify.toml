@@ -1,0 +1,25 @@
+# Netlify configuration for ytify
+# Build settings
+[build]
+  publish = "dist"
+  command = "bun run build"
+  # Remove postinstall to avoid native module compilation issues
+  # postinstall = "bun install"
+
+# Edge functions
+[edge_functions]
+  included_files = ["src/backend/**/*.ts", "netlify/edge-functions/**/*.ts"]
+
+[[edge_handlers]]
+  function = "search-suggestions"
+  path = "/api/search-suggestions"
+
+[[edge_handlers]]
+  function = "stream"
+  path = "/api/stream"
+
+# Redirects for SPA routing
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
