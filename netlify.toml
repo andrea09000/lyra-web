@@ -1,18 +1,8 @@
-# Build settings
+# Netlify minimal config for ytify
 [build]
   publish = "dist"
   command = "bun install && bun run build"
 
-# Edge Functions
-[[edge_handlers]]
-  function = "search-suggestions"
-  path = "/api/search-suggestions"
-
-[[edge_handlers]]
-  function = "stream"
-  path = "/api/s/:id"
-
-# Redirects for SPA routing
 [[redirects]]
   from = "/*"
   to = "/index.html"
