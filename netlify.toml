@@ -1,12 +1,23 @@
-# Netlify configuration for ytify
 # Build settings
 [build]
   publish = "dist"
-  command = "bun run build"
-  # Remove postinstall to avoid native module compilation issues
+  command = "bun install && bun run build"
 
-# SPA routing - redirect all requests to index.html
+# Edge Functions
+[[edge_handlers]]
+  function = "search-suggestions"
+  path = "/api/search-suggestions"
+
+[[edge_handlers]]
+  function = "stream"
+  path = "/api/s/:id"
+
+# Redirects for SPA routing
 [[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
+
+# Functions settings
+[functions]
+  node_modules = ["youtubei.js"]
