@@ -26,6 +26,7 @@ const ALLOWED_ORIGINS = [
   "https://ytify.pp.ua",
   "https://ytify.netlify.app",
   "https://ytify-zeta.vercel.app",
+  "https://musicvybee.netlify.app",
   "http://localhost:3000",
   "http://localhost:5173",
 ];
@@ -74,7 +75,7 @@ export default {
     const allowedOrigin =
       origin && ALLOWED_ORIGINS.includes(origin)
         ? origin
-        : "https://ytify.pp.ua";
+        : "https://musicvybee.netlify.app";
 
     const corsHeaders: Record<string, string> = {
       "Access-Control-Allow-Origin": allowedOrigin,
