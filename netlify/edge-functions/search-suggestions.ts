@@ -103,5 +103,5 @@ export default async (request: Request, _context: Context) => {
 };
 
 export const config: Config = {
-  path: "/search-suggestions",
+  path: "/api/search-suggestions",
 };

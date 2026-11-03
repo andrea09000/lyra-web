@@ -382,4 +382,4 @@ export default async (request: Request, context: Context) => {
   }
 };
 
-export const config: Config = { path: "/s/:id" };
+export const config: Config = { path: "/api/s/:id" };
