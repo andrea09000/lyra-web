@@ -17,7 +17,3 @@
   from = "/*"
   to = "/index.html"
   status = 200
-
-# Functions settings
-[functions]
-  node_modules = ["youtubei.js"]
