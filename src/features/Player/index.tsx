@@ -1,0 +1,156 @@
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  lazy,
+  onCleanup,
+  onMount,
+  Show,
+} from "solid-js";
+import "./Player.css";
+import { MediaDetails } from "@components/MediaPartials";
+import { config, playerBackground, type PlayerBackground } from "@config";
+import { cssVar } from "@modules/theme";
+import {
+  params,
+  playerStore,
+  setNavStore,
+  setStore,
+  t,
+  updateParam,
+} from "@stores";
+
+const MediaArtwork = lazy(
+  () => import("../../components/MediaPartials/MediaArtwork"),
+);
+const Lyrics = lazy(() => import("./Lyrics"));
+const Video = lazy(() => import("./Video"));
+const Controls = lazy(() => import("./Controls"));
+
+export default function () {
+  let playerSection!: HTMLDivElement;
+  let headerRef!: HTMLElement;
+  const [showLyrics, setShowLyrics] = createSignal(false);
+
+  function updateStaticBackgroundPosition() {
+    if (!playerSection) return;
+    const { offsetHeight, offsetWidth } = playerSection;
+    if (offsetHeight === 0) {
+      requestAnimationFrame(updateStaticBackgroundPosition);
+      return;
+    }
+    const diff = offsetHeight - offsetWidth;
+    const shift = Math.floor(diff / 2);
+    cssVar("--player-bp", `-${shift}px 0`);
+  }
+
+  onMount(() => {
+    setNavStore("player", "ref", playerSection);
+    const updateStatic = () => {
+      const current = background();
+      if (current !== "none" && !current.endsWith("-motion")) {
+        updateStaticBackgroundPosition();
+      }
+    };
+    updateStatic();
+    const ro = new ResizeObserver(updateStatic);
+    ro.observe(playerSection);
+    onCleanup(() => ro.disconnect());
+  });
+
+  createEffect(() => {
+    if (playerStore.saveProgress && playerStore.stream.id) {
+      updateParam("s", playerStore.stream.id);
+    } else if (!playerStore.saveProgress && params.has("s")) {
+      updateParam("s");
+    }
+  });
+
+  onCleanup(() => {
+    if (!playerStore.saveProgress) {
+      updateParam("s");
+    }
+  });
+
+  // Background layers are a music-only feature, videos always stay bare.
+  const background = createMemo<PlayerBackground>(() =>
+    playerStore.isMusic ? playerBackground() : "none",
+  );
+  const showBg = () => background() !== "none";
+
+  createEffect(() => {
+    const current = background();
+    // Leaves --player-bg untouched while idle so nothing is painted per track.
+    if (current === "none") return;
+    cssVar("--player-bg", `url(${playerStore.mediaArtwork})`);
+    if (!current.endsWith("-motion")) {
+      updateStaticBackgroundPosition();
+    } else {
+      cssVar("--player-bp", "0 0");
+    }
+  });
+
+  function getContext() {
+    const { id } = playerStore.context;
+    return id;
+  }
+
+  return (
+    <section
+      id="playerSection"
+      class={`bg-${background()}`}
+      ref={playerSection}
+    >
+      <Show when={showBg()}>
+        <div class="bg-image" />
+        <div class="bg-pane" />
+      </Show>
+
+      <header class="topShelf" ref={headerRef}>
+        <p>
+          <Show when={playerStore.context.src}>
+            <Show
+              when={playerStore.context.src === "queue"}
+              fallback={t("player_from", getContext())}
+            >
+              {getContext()}
+            </Show>
+          </Show>
+        </p>
+
+        <i
+          aria-label={t("player_more")}
+          class="ri-more-2-fill"
+          id="moreBtn"
+          onclick={() => setStore("actionsMenu", playerStore.stream)}
+        ></i>
+      </header>
+
+      <article>
+        <Show when={playerStore.isWatching && !playerStore.isMusic}>
+          <Video />
+        </Show>
+
+        <Show when={showLyrics()}>
+          <Lyrics onClose={() => setShowLyrics(false)} />
+        </Show>
+
+        <Show
+          when={
+            (!playerStore.isWatching || playerStore.isMusic) &&
+            config.loadImage &&
+            !showLyrics()
+          }
+        >
+          <MediaArtwork />
+        </Show>
+
+        <MediaDetails />
+
+        <Show when={!playerStore.isWatching || playerStore.isMusic}>
+          <Controls showLyrics={showLyrics} setShowLyrics={setShowLyrics} />
+        </Show>
+      </article>
+    </section>
+  );
+}

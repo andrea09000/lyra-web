@@ -1,0 +1,158 @@
+import { For, onMount, Show } from "solid-js";
+import {
+  clearSuggestions,
+  getSearchResults,
+  getSearchSuggestions,
+  playerStore,
+  searchStore,
+  setSearchStore,
+  t,
+} from "@stores";
+import { idFromURL } from "@utils";
+import { config, drawer } from "@config";
+import { player } from "@modules/playback";
+
+export default function () {
+  let superInput!: HTMLInputElement;
+  let blurTimeout: ReturnType<typeof setTimeout> | undefined;
+
+  onMount(() => {
+    getSearchResults();
+  });
+
+  function textToSearch(text: string) {
+    superInput.blur();
+    clearSuggestions();
+    setSearchStore("page", 1);
+    setSearchStore("results", []);
+    setSearchStore("query", text);
+    getSearchResults(true);
+  }
+
+  return (
+    <>
+      <input
+        value={searchStore.query}
+        placeholder={t("search_placeholder")}
+        type="search"
+        ref={superInput}
+        class="superInput"
+        autocomplete="off"
+        onpaste={async (e) => {
+          const pastedText = e.clipboardData?.getData("text");
+          const id = idFromURL(pastedText || "");
+          const separators = ["\n", " ", ","];
+          const isBulk = separators.find((separator) =>
+            pastedText?.includes(separator),
+          );
+
+          if (!config.searchBarLinkCapture) return;
+
+          if (!id && isBulk) {
+            const array = pastedText
+              ?.split(isBulk)
+              .map(idFromURL)
+              .filter((s) => s?.length === 11);
+            superInput.value = "";
+            if (array?.length)
+              await import("@modules/bulkCapture").then((mod) =>
+                mod.default(array as string[]),
+              );
+            return;
+          }
+
+          if (id !== playerStore.stream.id) {
+            player(id);
+            return;
+          }
+        }}
+        onblur={() => {
+          // Deferred so a mousedown on a suggestion still lands, but cancelled by
+          // onfocus so refocusing cannot be wiped by a stale timer.
+          clearTimeout(blurTimeout);
+          blurTimeout = setTimeout(clearSuggestions, 150);
+        }}
+        onfocus={() => {
+          clearTimeout(blurTimeout);
+          if (searchStore.query) return;
+          setSearchStore(
+            "suggestions",
+            "data",
+            [...drawer.recentSearches].reverse(),
+          );
+        }}
+        oninput={async (e) => {
+          const { value } = e.target;
+          setSearchStore("query", value);
+
+          if (!value) {
+            clearSuggestions();
+            setSearchStore(
+              "suggestions",
+              "data",
+              [...drawer.recentSearches].reverse(),
+            );
+            return;
+          }
+
+          getSearchSuggestions(value);
+        }}
+        onkeydown={(e) => {
+          const { data, index } = searchStore.suggestions;
+
+          if (e.key === "Enter") {
+            e.preventDefault();
+            textToSearch(data[index] || superInput.value);
+            return;
+          }
+
+          if (e.key === "ArrowUp") {
+            setSearchStore(
+              "suggestions",
+              "index",
+              index === -1 ? data.length - 1 : index - 1,
+            );
+          }
+
+          if (e.key === "ArrowDown") {
+            setSearchStore(
+              "suggestions",
+              "index",
+              index === data.length ? -1 : index + 1,
+            );
+          }
+
+          document
+            .querySelectorAll("li.hover")[0]
+            ?.scrollIntoView({ behavior: "smooth", block: "center" });
+        }}
+      />
+      <Show
+        when={
+          config.searchSuggestions && searchStore.suggestions.data.length > 0
+        }
+      >
+        <ul class="suggestions">
+          <For each={searchStore.suggestions.data}>
+            {(item, index) => (
+              <li
+                classList={{
+                  hover: index() === searchStore.suggestions.index,
+                }}
+                onmousedown={(e) => {
+                  e.preventDefault();
+                  textToSearch(item);
+                }}
+                onclick={() => {
+                  textToSearch(item);
+                }}
+              >
+                {item}
+              </li>
+            )}
+          </For>
+        </ul>
+      </Show>
+    </>
+  );
+}

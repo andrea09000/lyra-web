@@ -1,0 +1,598 @@
+import { config } from "@config";
+import {
+  CACHED_COLLECTION,
+  getTracksMap,
+  getMeta,
+  metaUpdater,
+  rehydrateStores,
+} from "@modules/library";
+import { getCachedTrackIdsSync } from "@modules/audioCache";
+import { store, setStore, t } from "@stores";
+import {
+  lsGet,
+  lsGetJSON,
+  lsKeys,
+  lsRemove,
+  lsSet,
+  lsSetJSON,
+  unique,
+} from "@utils";
+
+/**
+ * The cached collection indexes audio held in this device's OPFS, so it must
+ * never be pushed to or overwritten from another device.
+ */
+const isDeviceLocalKey = (storageKey: string) =>
+  storageKey === `library_${CACHED_COLLECTION}`;
+
+// --- Type Definitions ---
+
+type CollectionData = string[] | Channel[] | Playlist[] | Album[];
+type SyncItem = { id: string };
+
+interface LibrarySnapshot {
+  meta: Meta;
+  tracks: Collection;
+  deletedCollections?: Record<string, number>;
+  deletedTracks?: Record<string, number>;
+  [key: string]:
+    | Collection
+    | Meta
+    | CollectionData
+    | Record<string, number>
+    | number
+    | string
+    | undefined;
+}
+
+interface DeltaPayload {
+  meta: Partial<Meta>;
+  addedOrUpdatedTracks: Collection;
+  deletedTrackIds: string[];
+  updatedCollections: Record<string, CollectionData>;
+  deletedCollectionNames: string[];
+}
+
+// --- List & Track Merging Helpers ---
+
+function mergeItemList<T extends { id: string }>(local: T[], server: T[]): T[] {
+  const map = new Map<string, T>();
+  for (const item of server) {
+    if (item?.id) map.set(item.id, item);
+  }
+  for (const item of local) {
+    if (item?.id) {
+      const existing = map.get(item.id);
+      map.set(item.id, existing ? { ...existing, ...item } : item);
+    }
+  }
+  return Array.from(map.values());
+}
+
+function mergeTrackIds(
+  local: string[],
+  server: string[],
+  prepend: boolean,
+): string[] {
+  const ordered = prepend ? [...local, ...server] : [...server, ...local];
+  return unique(ordered.filter(Boolean));
+}
+
+// --- Full Sync ---
+
+export async function pullFullLibrary(userId: string): Promise<void> {
+  const response = await fetch(`${store.api}/library/${userId}`);
+  if (!response.ok) {
+    throw new Error(`Failed to pull library: ${response.statusText}`);
+  }
+  const snapshot = (await response.json()) as LibrarySnapshot;
+
+  for (const key of lsKeys("library_")) {
+    if (!isDeviceLocalKey(key)) lsRemove(key);
+  }
+
+  for (const key in snapshot) {
+    if (key === "deletedCollections" || key === "deletedTracks") continue;
+    if (isDeviceLocalKey(`library_${key}`)) continue;
+    const value = snapshot[key];
+    if (value !== undefined) {
+      const storageKey = key.startsWith("library_") ? key : `library_${key}`;
+      lsSetJSON(storageKey, value);
+    }
+  }
+}
+
+export async function pushFullLibrary(userId: string): Promise<void> {
+  const snapshot: Partial<LibrarySnapshot> = {};
+  const now = Date.now();
+
+  for (const key of lsKeys("library_")) {
+    if (isDeviceLocalKey(key)) continue;
+    try {
+      const val = lsGet(key);
+      if (val) {
+        const parsed = JSON.parse(val);
+        const snapKey = key.slice(8);
+        (snapshot as Record<string, unknown>)[snapKey] = parsed;
+      }
+    } catch (e) {
+      console.warn(`Failed to parse ${key} during sync push`, e);
+    }
+  }
+
+  if (!snapshot.meta) {
+    snapshot.meta = getMeta();
+  }
+
+  // Ensure meta tracks and track modified timestamps are populated
+  if (snapshot.tracks && Object.keys(snapshot.tracks).length > 0) {
+    snapshot.meta.tracks = Math.max(snapshot.meta.tracks || 0, now);
+    for (const id in snapshot.tracks) {
+      if (!snapshot.tracks[id].modified) {
+        snapshot.tracks[id].modified = now;
+      }
+    }
+    lsSetJSON("library_tracks", snapshot.tracks);
+  }
+  for (const key in snapshot) {
+    if (
+      !["meta", "tracks", "deletedCollections", "deletedTracks"].includes(key)
+    ) {
+      snapshot.meta[key] = Math.max(snapshot.meta[key] || 0, now);
+    }
+  }
+  lsSetJSON("library_meta", snapshot.meta);
+
+  const response = await fetch(`${store.api}/library/${userId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(snapshot),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to push library: ${response.statusText}`);
+  }
+}
+
+// --- Delta Sync & Coordinator ---
+
+let lastSyncTime = 0;
+let isSyncing = false;
+let syncQueued = false;
+
+export async function runSync(
+  userId: string,
+  retryCount = 0,
+): Promise<{ success: boolean; message: string }> {
+  if (isSyncing && retryCount === 0) {
+    syncQueued = true;
+    return { success: true, message: "sync_queued" };
+  }
+  isSyncing = true;
+
+  const MAX_RETRIES = 3;
+  if (retryCount === 0) setStore("syncState", "syncing");
+
+  try {
+    const isInitialSync = lsGet("dbsync_account") !== userId;
+    const initialLocalMeta = isInitialSync
+      ? { version: 5, tracks: 0 }
+      : getMeta();
+
+    const pullResponse = await fetch(`${store.api}/sync/${userId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ meta: initialLocalMeta }),
+    });
+
+    if (
+      [429, 502, 503, 504].includes(pullResponse.status) &&
+      retryCount < MAX_RETRIES
+    ) {
+      await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, retryCount)));
+      return runSync(userId, retryCount + 1);
+    }
+
+    if (pullResponse.status === 404) {
+      await pushFullLibrary(userId);
+      lsSet("dbsync_account", userId);
+      lsRemove("dbsync_dirty_tracks");
+      lsRemove("dbsync_dirty_collections");
+      setStore("syncState", "synced");
+      lastSyncTime = Date.now();
+      return { success: true, message: t("sync_initial_complete") };
+    }
+
+    if (!pullResponse.ok) {
+      throw new Error(`Failed to initiate sync: ${pullResponse.statusText}`);
+    }
+
+    const pullResult = (await pullResponse.json()) as {
+      serverMeta: Meta;
+      delta: DeltaPayload | null;
+      fullSyncRequired: boolean;
+      isFullTrackSync: boolean;
+    };
+    const remoteMeta = pullResult.serverMeta;
+
+    if (pullResult.delta) {
+      applyDelta(
+        pullResult.delta,
+        pullResult.isFullTrackSync || isInitialSync,
+        isInitialSync,
+      );
+      rehydrateStores();
+    } else if (pullResult.fullSyncRequired) {
+      await pullFullLibrary(userId);
+      rehydrateStores();
+    }
+
+    lsSet("dbsync_account", userId);
+
+    // Re-read current state after applyDelta
+    const currentDirtyTracks = getDirtyTracks();
+    const currentDirtyCollections = getDirtyCollections();
+    const postSyncMeta = getMeta();
+    const currentTracks = getTracksMap();
+
+    const deltaPayload: DeltaPayload = {
+      meta: {},
+      addedOrUpdatedTracks: {},
+      deletedTrackIds: [],
+      updatedCollections: {},
+      deletedCollectionNames: [],
+    };
+
+    // Tracks logic: push dirty tracks
+    const hasDirtyTracks =
+      currentDirtyTracks.added.length > 0 ||
+      currentDirtyTracks.deleted.length > 0;
+
+    if (hasDirtyTracks) {
+      currentDirtyTracks.added.forEach((id) => {
+        if (currentTracks[id])
+          deltaPayload.addedOrUpdatedTracks[id] = currentTracks[id];
+      });
+      deltaPayload.deletedTrackIds = currentDirtyTracks.deleted;
+      deltaPayload.meta.tracks = Date.now();
+    }
+
+    // Compare post-sync local meta vs remote meta to determine which collections to push
+    for (const key in postSyncMeta) {
+      if (key === "version" || key === "tracks") continue;
+      if (isDeviceLocalKey(`library_${key}`)) continue;
+      if ((postSyncMeta[key] || 0) > (remoteMeta[key] || 0)) {
+        const data = lsGetJSON<CollectionData | null>(`library_${key}`, null);
+        if (data !== null) {
+          deltaPayload.updatedCollections[key] = data;
+          deltaPayload.meta[key] = postSyncMeta[key];
+        }
+      }
+    }
+
+    // Collections explicitly deleted locally
+    deltaPayload.deletedCollectionNames = [...currentDirtyCollections.deleted];
+
+    if (
+      Object.keys(deltaPayload.meta).length === 0 &&
+      Object.keys(deltaPayload.addedOrUpdatedTracks).length === 0 &&
+      deltaPayload.deletedTrackIds.length === 0 &&
+      deltaPayload.deletedCollectionNames.length === 0
+    ) {
+      setStore("syncState", "synced");
+      lastSyncTime = Date.now();
+      return { success: true, message: t("sync_up_to_date") };
+    }
+
+    const putResponse = await fetch(`${store.api}/sync/${userId}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(deltaPayload),
+    });
+
+    if (
+      [429, 502, 503, 504].includes(putResponse.status) &&
+      retryCount < MAX_RETRIES
+    ) {
+      await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, retryCount)));
+      return runSync(userId, retryCount + 1);
+    }
+
+    if (!putResponse.ok) {
+      throw new Error(`Failed to push delta: ${putResponse.statusText}`);
+    }
+
+    clearDirtyTracks(currentDirtyTracks);
+    clearDeletedCollections(currentDirtyCollections.deleted);
+    setStore("syncState", "synced");
+    lastSyncTime = Date.now();
+
+    return { success: true, message: t("sync_changes_synced") };
+  } catch (error) {
+    console.error("Sync failure:", error);
+    lastSyncTime = Date.now();
+    const message = error instanceof Error ? error.message : String(error);
+    setStore("syncState", "error");
+    return { success: false, message: `${t("sync_failed")} ${message}` };
+  } finally {
+    isSyncing = false;
+    if (syncQueued && config.dbsync) {
+      syncQueued = false;
+      setTimeout(() => {
+        if (config.dbsync) runSync(config.dbsync);
+      }, 5000);
+    }
+  }
+}
+
+function applyDelta(
+  delta: DeltaPayload,
+  isFullTrackSync?: boolean,
+  isInitialSync?: boolean,
+) {
+  let localTracks = getTracksMap();
+  const dirtyTracks = getDirtyTracks();
+  const dirtyCollections = getDirtyCollections();
+  const now = Date.now();
+
+  // PROTECTION: Do not resurrect tracks locally marked as deleted
+  for (const id of dirtyTracks.deleted) {
+    if (delta.addedOrUpdatedTracks && delta.addedOrUpdatedTracks[id]) {
+      delete delta.addedOrUpdatedTracks[id];
+    }
+  }
+
+  // PROTECTION: Do not resurrect collections locally marked as deleted
+  for (const name of dirtyCollections.deleted) {
+    if (delta.updatedCollections && delta.updatedCollections[name]) {
+      delete delta.updatedCollections[name];
+    }
+  }
+
+  // Tracks this device holds audio for must survive any remote or pending
+  // delete. The cached collection indexes OPFS bytes no other device can
+  // supply, and losing the metadata would strand the audio.
+  const cachedIds = getCachedTrackIdsSync();
+  const isCacheOnly = (id: string) => cachedIds.includes(id);
+
+  if (isFullTrackSync) {
+    const mergedTracks: Collection = { ...delta.addedOrUpdatedTracks };
+
+    // Preserve any local tracks that were not on the server
+    for (const [id, track] of Object.entries(localTracks)) {
+      if (!mergedTracks[id]) {
+        mergedTracks[id] = track;
+        if (!dirtyTracks.added.includes(id)) {
+          dirtyTracks.added.push(id);
+        }
+      }
+    }
+
+    dirtyTracks.deleted.forEach((id) => {
+      if (isCacheOnly(id)) return;
+      delete mergedTracks[id];
+    });
+
+    saveDirtyTracks(dirtyTracks);
+    localTracks = mergedTracks;
+  } else {
+    Object.assign(localTracks, delta.addedOrUpdatedTracks);
+    delta.deletedTrackIds.forEach((id) => {
+      if (isCacheOnly(id)) return;
+      delete localTracks[id];
+    });
+  }
+
+  lsSetJSON("library_tracks", localTracks);
+
+  const currentMeta = getMeta();
+
+  // Process updated collections with intelligent merging
+  for (const [key, remoteData] of Object.entries(delta.updatedCollections)) {
+    if (isDeviceLocalKey(`library_${key}`)) continue;
+    const localRaw = lsGet(`library_${key}`);
+    if (!localRaw) {
+      lsSetJSON(`library_${key}`, remoteData);
+      currentMeta[key] = delta.meta[key] || now;
+      continue;
+    }
+
+    const localTimestamp = currentMeta[key] || 0;
+    const serverTimestamp =
+      typeof delta.meta[key] === "number" ? delta.meta[key]! : 0;
+
+    // Use union merging for initial sync
+    if (isInitialSync) {
+      try {
+        const localData = JSON.parse(localRaw);
+        let merged: CollectionData;
+        if (key === "channels" || key === "playlists" || key === "albums") {
+          merged = mergeItemList(
+            Array.isArray(localData) ? localData : [],
+            Array.isArray(remoteData) ? (remoteData as SyncItem[]) : [],
+          );
+        } else if (Array.isArray(remoteData) && Array.isArray(localData)) {
+          const isPrepended = ["history", "favorites", "liked"].includes(key);
+          merged = mergeTrackIds(
+            localData,
+            remoteData as string[],
+            isPrepended,
+          );
+        } else {
+          merged = remoteData;
+        }
+        lsSetJSON(`library_${key}`, merged);
+
+        // If local contained items that were not on the server, ensure timestamp is fresh so it will be pushed back
+        const hasLocalItemsNotOnServer =
+          Array.isArray(localData) &&
+          localData.some((item) => {
+            const id = typeof item === "string" ? item : (item as SyncItem)?.id;
+            return (
+              Array.isArray(remoteData) &&
+              !remoteData.some(
+                (r) => (typeof r === "string" ? r : (r as SyncItem)?.id) === id,
+              )
+            );
+          });
+        if (hasLocalItemsNotOnServer) {
+          currentMeta[key] = now;
+        } else {
+          currentMeta[key] = Math.max(localTimestamp, serverTimestamp);
+        }
+      } catch {
+        lsSetJSON(`library_${key}`, remoteData);
+        currentMeta[key] = Math.max(localTimestamp, serverTimestamp);
+      }
+    } else {
+      // Last-write-wins: apply newer server snapshot
+      if (serverTimestamp >= localTimestamp) {
+        lsSetJSON(`library_${key}`, remoteData);
+        currentMeta[key] = serverTimestamp;
+      }
+    }
+  }
+
+  // Handle deleted collections from server
+  for (const key of delta.deletedCollectionNames) {
+    if (isDeviceLocalKey(`library_${key}`)) continue;
+    lsRemove(`library_${key}`);
+    delete currentMeta[key];
+  }
+
+  for (const [key, timestamp] of Object.entries(delta.meta)) {
+    if (typeof timestamp === "number" && timestamp > (currentMeta[key] || 0)) {
+      currentMeta[key] = timestamp;
+    }
+  }
+
+  lsSetJSON("library_meta", currentMeta);
+}
+
+let syncTimeout: NodeJS.Timeout | null = null;
+
+export function scheduleSync() {
+  if (!config.dbsync) return;
+  if (syncTimeout) clearTimeout(syncTimeout);
+  syncTimeout = setTimeout(() => {
+    runSync(config.dbsync!);
+    syncTimeout = null;
+  }, 30 * 1000);
+}
+
+export function cleanupSyncState() {
+  lsRemove("dbsync_account");
+  lsRemove("dbsync_dirty_tracks");
+  lsRemove("dbsync_dirty_collections");
+  if (syncTimeout) {
+    clearTimeout(syncTimeout);
+    syncTimeout = null;
+  }
+}
+
+// --- Lifecycle Sync Listeners (Focus / Visibility) ---
+
+let lifecycleInitialized = false;
+
+export function initSyncLifecycle() {
+  if (
+    lifecycleInitialized ||
+    typeof window === "undefined" ||
+    typeof document === "undefined"
+  )
+    return;
+  lifecycleInitialized = true;
+
+  const onVisibleOrFocused = () => {
+    if (document.visibilityState === "visible" && config.dbsync) {
+      const now = Date.now();
+      if (now - lastSyncTime > 30 * 1000) {
+        runSync(config.dbsync);
+      }
+    }
+  };
+
+  document.addEventListener("visibilitychange", onVisibleOrFocused);
+  window.addEventListener("focus", onVisibleOrFocused);
+}
+
+// --- Dirty Track Tracking ---
+
+export const getDirtyTracks = (): { added: string[]; deleted: string[] } =>
+  lsGetJSON("dbsync_dirty_tracks", { added: [], deleted: [] } as {
+    added: string[];
+    deleted: string[];
+  });
+
+export const saveDirtyTracks = (dirtyTracks: {
+  added: string[];
+  deleted: string[];
+}) => {
+  lsSetJSON("dbsync_dirty_tracks", dirtyTracks);
+};
+
+export const addDirtyTrack = (id: string) => {
+  const dirtyTracks = getDirtyTracks();
+  if (!dirtyTracks.added.includes(id)) dirtyTracks.added.push(id);
+  dirtyTracks.deleted = dirtyTracks.deleted.filter(
+    (deletedId) => deletedId !== id,
+  );
+  saveDirtyTracks(dirtyTracks);
+  metaUpdater("tracks");
+  scheduleSync();
+};
+
+export const removeDirtyTrack = (id: string) => {
+  const dirtyTracks = getDirtyTracks();
+  if (!dirtyTracks.deleted.includes(id)) dirtyTracks.deleted.push(id);
+  dirtyTracks.added = dirtyTracks.added.filter((addedId) => addedId !== id);
+  saveDirtyTracks(dirtyTracks);
+  metaUpdater("tracks");
+  scheduleSync();
+};
+
+export const clearDirtyTracks = (pushed: {
+  added: string[];
+  deleted: string[];
+}) => {
+  const current = getDirtyTracks();
+  current.added = current.added.filter((id) => !pushed.added.includes(id));
+  current.deleted = current.deleted.filter(
+    (id) => !pushed.deleted.includes(id),
+  );
+  if (current.added.length === 0 && current.deleted.length === 0) {
+    lsRemove("dbsync_dirty_tracks");
+  } else {
+    saveDirtyTracks(current);
+  }
+};
+
+// --- Dirty Collection Tracking ---
+
+export const getDirtyCollections = (): { deleted: string[] } =>
+  lsGetJSON("dbsync_dirty_collections", { deleted: [] } as {
+    deleted: string[];
+  });
+
+export const markCollectionDeleted = (collectionName: string) => {
+  const dirty = getDirtyCollections();
+  if (!dirty.deleted.includes(collectionName)) {
+    dirty.deleted.push(collectionName);
+    lsSetJSON("dbsync_dirty_collections", dirty);
+  }
+  scheduleSync();
+};
+
+export const clearDeletedCollections = (deletedNames: string[]) => {
+  const current = getDirtyCollections();
+  current.deleted = current.deleted.filter(
+    (name) => !deletedNames.includes(name),
+  );
+  if (current.deleted.length === 0) {
+    lsRemove("dbsync_dirty_collections");
+  } else {
+    lsSetJSON("dbsync_dirty_collections", current);
+  }
+};

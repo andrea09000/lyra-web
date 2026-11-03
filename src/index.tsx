@@ -1,0 +1,265 @@
+/* @refresh reload */
+
+import {
+  lazy,
+  onMount,
+  onCleanup,
+  createSignal,
+  Show,
+  Switch,
+  Match,
+} from "solid-js";
+import { render } from "solid-js/web";
+import { syncLibrary } from "@modules/library";
+import { themer } from "@modules/theme";
+import {
+  updateLang,
+  setStore,
+  store,
+  navStore,
+  setNavStore,
+  playerStore,
+  playNext,
+  playPrev,
+  stepVolume,
+  toggleMute,
+  params,
+} from "@stores";
+import { handleNavClick } from "@components/HeaderNav";
+import NavBar from "@components/NavBar";
+import "./styles/global.css";
+
+updateLang().then(() => {
+  themer();
+
+  render(() => <App />, document.body);
+});
+
+const MiniPlayer = lazy(() => import("@components/MiniPlayer"));
+const ActionsMenu = lazy(() => import("@components/ActionsMenu"));
+const SnackBar = lazy(() => import("@components/SnackBar"));
+
+export default function App() {
+  const [isPortrait, setIsPortrait] = createSignal(
+    typeof window !== "undefined"
+      ? window.matchMedia("(orientation: portrait)").matches
+      : false,
+  );
+
+  let mainRef!: HTMLElement;
+  let leftPanelRef!: HTMLDivElement;
+  let rightPanelRef!: HTMLDivElement;
+
+  onMount(async () => {
+    if ("launchQueue" in window) {
+      (window as any).launchQueue.setConsumer(() => {});
+    }
+
+    const mql = window.matchMedia("(orientation: portrait)");
+    const updateOrientation = (e: MediaQueryListEvent) =>
+      setIsPortrait(e.matches);
+    mql.addEventListener("change", updateOrientation);
+    onCleanup(() => mql.removeEventListener("change", updateOrientation));
+
+    let scrollTimeout: number;
+    const checkScrollCompletion = () => {
+      if (!mql.matches || !mainRef) return;
+      const scrollLeft = mainRef.scrollLeft;
+      const maxScroll = mainRef.scrollWidth - mainRef.clientWidth;
+
+      // Fully scrolled to right panel (within 5px tolerance)
+      if (maxScroll > 0 && scrollLeft >= maxScroll - 5) {
+        if (navStore.player.state) {
+          setNavStore("player", "state", false);
+        }
+      }
+      // Fully scrolled to left panel (player)
+      else if (scrollLeft <= 5) {
+        if (!navStore.player.state) {
+          setNavStore("player", "state", true);
+        }
+      }
+    };
+
+    const onScroll = () => {
+      if (!mql.matches || !mainRef) return;
+      clearTimeout(scrollTimeout);
+      scrollTimeout = window.setTimeout(checkScrollCompletion, 60);
+    };
+
+    mainRef?.addEventListener("scroll", onScroll, { passive: true });
+    mainRef?.addEventListener("scrollend", checkScrollCompletion, {
+      passive: true,
+    });
+    onCleanup(() => {
+      clearTimeout(scrollTimeout);
+      mainRef?.removeEventListener("scroll", onScroll);
+      mainRef?.removeEventListener("scrollend", checkScrollCompletion);
+    });
+
+    const focusSearchInput = (attempt = 0) => {
+      const searchInput =
+        document.querySelector<HTMLInputElement>(".superInput");
+      if (searchInput) searchInput.focus();
+      else if (attempt < 10)
+        requestAnimationFrame(() => focusSearchInput(attempt + 1));
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target?.tagName === "INPUT" ||
+        target?.tagName === "TEXTAREA" ||
+        target?.tagName === "SELECT" ||
+        target?.isContentEditable ||
+        document.querySelector("dialog[open]")
+      ) {
+        return;
+      }
+
+      if (e.key === " " || e.code === "Space") {
+        e.preventDefault();
+        if (playerStore.audio.paused) {
+          playerStore.audio.play().catch(() => {});
+        } else {
+          playerStore.audio.pause();
+        }
+      } else if (e.key === "ArrowLeft" && !e.shiftKey) {
+        e.preventDefault();
+        playerStore.audio.currentTime = Math.max(
+          0,
+          playerStore.audio.currentTime - 5,
+        );
+      } else if (e.key === "ArrowRight" && !e.shiftKey) {
+        e.preventDefault();
+        playerStore.audio.currentTime = Math.min(
+          playerStore.fullDuration || Infinity,
+          playerStore.audio.currentTime + 5,
+        );
+      } else if (
+        (e.shiftKey && e.key === "ArrowRight") ||
+        (e.shiftKey && (e.key === "N" || e.key === "n")) ||
+        e.key === "]"
+      ) {
+        e.preventDefault();
+        playNext();
+      } else if (
+        (e.shiftKey && e.key === "ArrowLeft") ||
+        (e.shiftKey && (e.key === "P" || e.key === "p")) ||
+        e.key === "["
+      ) {
+        e.preventDefault();
+        playPrev();
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        stepVolume(1);
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        stepVolume(-1);
+      } else if (e.key === "m" || e.key === "M") {
+        e.preventDefault();
+        toggleMute();
+      } else if (e.key === "1") {
+        e.preventDefault();
+        handleNavClick("queue");
+      } else if (e.key === "2") {
+        e.preventDefault();
+        handleNavClick("search");
+      } else if (e.key === "3") {
+        e.preventDefault();
+        handleNavClick("library");
+      } else if (e.key === "/") {
+        e.preventDefault();
+        handleNavClick("search");
+        focusSearchInput();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    onCleanup(() => {
+      window.removeEventListener("keydown", onKeyDown);
+    });
+
+    await import("@modules/start.ts").then((mod) => mod.default());
+
+    if (params.has("s")) {
+      setNavStore("player", "state", true);
+      leftPanelRef?.scrollIntoView({ behavior: "instant" });
+    } else {
+      setNavStore("player", "state", false);
+      rightPanelRef?.scrollIntoView({ behavior: "instant" });
+    }
+
+    setStore("syncState", "synced");
+    syncLibrary("init");
+  });
+
+  const Queue = navStore.queue.component;
+  const Search = navStore.search.component;
+  const Library = navStore.library.component;
+  const List = navStore.list.component;
+  const Settings = navStore.settings.component;
+  const Player = navStore.player.component;
+
+  return (
+    <>
+      <main
+        ref={mainRef}
+        classList={{
+          "player-closed": isPortrait() && !navStore.player.state,
+        }}
+      >
+        <div class="left-panel" ref={leftPanelRef}>
+          <Player />
+        </div>
+        <div class="right-panel" ref={rightPanelRef}>
+          <div class="right-panel-content">
+            <Switch>
+              <Match when={navStore.active === "queue"}>
+                <Queue />
+              </Match>
+              <Match when={navStore.active === "list"}>
+                <List />
+              </Match>
+              <Match when={navStore.active === "settings"}>
+                <Settings />
+              </Match>
+              <Match when={navStore.active === "library"}>
+                <Library />
+              </Match>
+              <Match when={navStore.active === "search" || true}>
+                <Search />
+              </Match>
+            </Switch>
+          </div>
+
+          <Show when={isPortrait()}>
+            <Show
+              when={
+                !navStore.player.state &&
+                (playerStore.playbackState !== "none" ||
+                  Boolean(playerStore.stream.id))
+              }
+            >
+              <MiniPlayer />
+            </Show>
+            <Show
+              when={
+                navStore.active !== "list" && navStore.active !== "settings"
+              }
+            >
+              <NavBar />
+            </Show>
+          </Show>
+        </div>
+      </main>
+
+      <Show when={store.actionsMenu?.id}>
+        <ActionsMenu />
+      </Show>
+      <Show when={store.snackbar}>
+        <SnackBar />
+      </Show>
+    </>
+  );
+}

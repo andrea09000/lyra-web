@@ -1,0 +1,161 @@
+import { setConfig, config } from "@config";
+import { CACHED_COLLECTION, getTracksMap } from "@modules/library";
+import { clearOpusCache } from "@modules/audioCache";
+import { setStore, t } from "@stores";
+import { downloadJSON, lsGetJSON, lsKeys, lsRemove, lsSetJSON } from "@utils";
+import { createSignal, lazy, Show } from "solid-js";
+import { render } from "solid-js/web";
+import ConfigureModal from "./ConfigureModal";
+
+const Login = lazy(() => import("@components/Login"));
+
+export default function Dropdown() {
+  const [showConfigure, setShowConfigure] = createSignal(false);
+  let detailsRef!: HTMLDetailsElement;
+
+  async function importLibrary(e: Event) {
+    const importBtn = e.target as HTMLInputElement & { files: FileList };
+    const importedData = JSON.parse(await importBtn.files[0].text());
+
+    if (importedData.meta) {
+      // Check for V2 library
+      // Deconsolidate V2 library
+      for (const key in importedData) {
+        if (importedData.hasOwnProperty(key)) {
+          // Device-local: it indexes OPFS audio that never travels with the file.
+          if (key === CACHED_COLLECTION) continue;
+          lsSetJSON("library_" + key, importedData[key]);
+        }
+      }
+      setStore("snackbar", t("library_imported")); // Reusing existing translation key
+      location.reload();
+    } else {
+      // Assume V1 library
+      lsSetJSON("library", importedData);
+      setStore("snackbar", t("library_migration_v1_v2"));
+      location.reload(); // Trigger migration
+    }
+  }
+
+  function exportLibrary() {
+    const date = new Date().toISOString().split("T")[0];
+    const filename = `ytify_library_${date}.json`;
+
+    const exportedData: { [key: string]: any } = {};
+    for (const key of lsKeys("library_")) {
+      const name = key.slice(8);
+      // Device-local: the cached ids point at audio absent on any other device.
+      if (name === CACHED_COLLECTION) continue;
+      exportedData[name] = lsGetJSON(key, null);
+    }
+
+    downloadJSON(filename, exportedData);
+  }
+
+  async function cleanLibrary() {
+    // Count items in V2 library
+    let count = 0;
+    const tracksMap = getTracksMap();
+    count = Object.keys(tracksMap).length;
+
+    if (confirm(t("library_clean_prompt", count.toString()))) {
+      // Remove all V2 library_ keys
+      for (const key of lsKeys("library")) {
+        lsRemove(key);
+      }
+
+      // Cached audio lives in OPFS, which a localStorage wipe does not touch.
+      await clearOpusCache();
+
+      location.reload();
+    }
+  }
+
+  return (
+    <>
+      <details ref={detailsRef}>
+        <summary>
+          <i aria-label="More Options" class="ri-more-2-fill"></i>
+        </summary>
+        <ul>
+          <li
+            onclick={() => {
+              detailsRef?.removeAttribute("open");
+              setShowConfigure(true);
+            }}
+          >
+            <i class="ri-archive-stack-line"></i>&nbsp;{t("library_configure")}
+          </li>
+          <li onclick={() => document.getElementById("upload_ytify")?.click()}>
+            <label>
+              <i class="ri-import-line"></i>&nbsp;{t("library_import")}
+            </label>
+            <input type="file" id="upload_ytify" onchange={importLibrary} />
+          </li>
+          <li id="exportBtn" onclick={exportLibrary}>
+            <i class="ri-export-line"></i>&nbsp;{t("library_export")}
+          </li>
+          <li id="cleanLibraryBtn" onclick={() => cleanLibrary()}>
+            <i class="ri-delete-bin-2-line"></i>&nbsp;{t("library_clean")}
+          </li>
+
+          <li
+            onclick={() => document.getElementById("upload_songshift")?.click()}
+          >
+            <label>
+              <i class="ri-refresh-line"></i>&nbsp;Import Playlists from
+              SongShift
+            </label>
+            <input
+              type="file"
+              id="upload_songshift"
+              onchange={async (e) =>
+                (await import("@modules/importSongshiftStreams")).default(
+                  e.target.files![0],
+                )
+              }
+            />
+          </li>
+
+          <li
+            id="importYTPlaylistBtn"
+            onclick={async () => {
+              detailsRef?.removeAttribute("open");
+              (await import("@modules/importYouTubePlaylist")).default();
+            }}
+          >
+            <i class="ri-youtube-fill youtube-icon"></i>&nbsp;
+            {t("library_import_yt_playlist")}
+          </li>
+
+          <Show
+            when={config.dbsync}
+            fallback={
+              <li
+                onclick={() => {
+                  render(() => <Login />, document.body);
+                }}
+              >
+                <i class="ri-cloud-fill"></i>&nbsp;Cloud Sync
+              </li>
+            }
+          >
+            <li
+              onclick={async () => {
+                const { cleanupSyncState } = await import("@modules/cloudSync");
+                cleanupSyncState();
+                setConfig("dbsync", "");
+                location.reload();
+              }}
+            >
+              <i class="ri-cloud-fill"></i>&nbsp;Logout
+            </li>
+          </Show>
+        </ul>
+      </details>
+      <Show when={showConfigure()}>
+        <ConfigureModal close={() => setShowConfigure(false)} />
+      </Show>
+    </>
+  );
+}
